@@ -1,0 +1,10 @@
+[
+    {
+        "name": "Backup Melissa DB",
+        "command": "cp /home/ubuntu/melissa/melissa.db /home/ubuntu/melissa-backups/melissa_$(date +%Y%m%d_%H%M%S).db || echo 'Backup failed'"
+    },
+    {
+        "name": "Clean tmp",
+        "command": "find /tmp -type f -atime +7 -delete"
+    }
+]

@@ -1,0 +1,23 @@
+{
+  "servers": [
+    {
+      "name": "main-ubuntu",
+      "host": "1.2.3.4",
+      "user": "ubuntu",
+      "port": 22,
+      "protocol": "rsync",
+      "paths": [
+        "/home/ubuntu/melissa",
+        "/home/ubuntu/nova-cli",
+        "/home/ubuntu/.nova",
+        "/home/ubuntu/omni-core"
+      ],
+      "excludes": [
+        ".git",
+        "__pycache__",
+        "*.pyc",
+        "node_modules"
+      ]
+    }
+  ]
+}
