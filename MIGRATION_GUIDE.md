@@ -1,219 +1,230 @@
-OMNI CORE
-Guia breve de migracion y recuperacion
-Repositorio privado: sxrubyo/omni-core
+# Omni Core - Migration Guide
 
-========================================================================
-1. OBJETIVO
-========================================================================
+Repositorio: `sxrubyo/omni-core`
 
-Esta guia sirve para migrar Omni Core a una nueva instancia Ubuntu y
-recuperar la operacion con el menor numero de pasos posible.
+Esta guía describe el flujo productivo limpio recomendado para mover Omni Core entre máquinas, reconstruir un host desde cero y mantener el estado sincronizado sin arrastrar ruido innecesario.
 
-Modos soportados:
+## 1. Principio de migración
 
-1. Copiar la carpeta por SCP
-2. Clonar desde GitHub privado
-3. Bootstrap automatico con un solo comando
+No se recomienda clonar `/home/ubuntu` completo.
 
+La estrategia correcta es separar:
 
-========================================================================
-2. OPCION RECOMENDADA
-========================================================================
+- **inventory**: qué existe y cómo se clasifica
+- **bundle state**: lo restaurable y productivo
+- **secrets pack**: credenciales y secretos cifrados
+- **reconcile**: restauración idempotente
+- **timer**: mantenimiento diario automático
 
-Usar GitHub privado + bootstrap:
+## 2. Qué entra en cada paquete
 
-1. El nuevo servidor obtiene acceso al repo privado
-2. Se clona o actualiza sxrubyo/omni-core
-3. Se ejecuta install.sh con sincronizacion y Docker Compose
+### Bundle state
 
-Comando recomendado:
+Debe incluir, como mínimo:
 
-  bash bootstrap.sh git@github.com:sxrubyo/omni-core.git /opt/omni-core main
+- `config/`
+- `data/`
+- `backups/`
+- `logs/`
+- `tasks.json`
+- manifests de despliegue útiles
+- snapshots de servidores remotos definidos por Omni Core
 
+### Secrets pack
 
-========================================================================
-3. PREPARACION DE ACCESO A GITHUB
-========================================================================
+Debe incluir por separado y cifrado:
 
-Opcion A. SSH con deploy key o clave del servidor
+- `.env`
+- tokens de API
+- credenciales SSH
+- llaves de despliegue
+- sesiones sensibles
+- cualquier dato que no deba quedar en Git
 
-Generar clave en el servidor:
+### Qué no viajar por defecto
 
-  ssh-keygen -t ed25519 -C "omni-core-migration" -f ~/.ssh/id_ed25519
+- `node_modules`
+- `.cache`
+- `__pycache__`
+- logs históricos que se regeneran solos
+- temporales
+- artefactos de build
 
-Ver la clave publica:
+## 3. Flujo recomendado
 
-  cat ~/.ssh/id_ed25519.pub
+### Paso 1. Exportar inventario
 
-Agregar esa clave en GitHub:
+Antes de migrar:
 
-  Repo: sxrubyo/omni-core
-  Settings -> Deploy keys -> Add deploy key
+- revisar rutas reales
+- clasificar estado vs. ruido
+- identificar repos, configs y servidores remotos
 
-Probar acceso:
+### Paso 2. Exportar bundle de estado
 
-  ssh -T git@github.com
+Guardar:
 
+- `config/`
+- `data/`
+- `backups/`
+- `logs/`
+- `tasks.json`
 
-Opcion B. GitHub CLI
+### Paso 3. Exportar secretos
 
-Instalar GitHub CLI:
+Guardar aparte y cifrar.
 
-  sudo apt-get update
-  sudo apt-get install -y gh
+Nunca mezclar con el bundle de estado.
 
-Iniciar sesion:
+### Paso 4. Bootstrap del host nuevo
 
-  gh auth login
+Usar uno de estos caminos:
 
-Verificar sesion:
+```bash
+bash bootstrap.sh git@github.com:sxrubyo/omni-core.git /opt/omni-core main
+```
 
-  gh auth status
+o desde otra máquina:
 
+```powershell
+pwsh ./bootstrap.ps1 -TargetHost 1.2.3.4 -User ubuntu -RepoUrl git@github.com:sxrubyo/omni-core.git -Destination /opt/omni-core -Branch main
+```
 
-========================================================================
-4. MIGRACION DESDE GITHUB PRIVADO
-========================================================================
+### Paso 5. Importar bundle y secretos
 
-Clonar manualmente:
+Restaurar primero el bundle de estado.
 
-  git clone git@github.com:sxrubyo/omni-core.git /opt/omni-core
-  cd /opt/omni-core
-  chmod +x install.sh bin/omni bootstrap.sh
-  cp .env.example .env
-  cp config/repos.example.json config/repos.json
-  cp config/servers.example.json config/servers.json
-  ./install.sh --compose --sync
+Después importar el secrets pack cifrado.
 
-Actualizacion posterior:
-
-  cd /opt/omni-core
-  git pull --ff-only
-  ./install.sh --compose --sync
-
-
-========================================================================
-5. MIGRACION DESDE CARPETA COPIADA POR SCP
-========================================================================
-
-Desde el servidor origen o desde tu maquina:
-
-  scp -r omni-core ubuntu@IP_DESTINO:/opt/omni-core
-
-Luego en el servidor destino:
-
-  ssh ubuntu@IP_DESTINO
-  cd /opt/omni-core
-  chmod +x install.sh bin/omni bootstrap.sh
-  cp .env.example .env
-  cp config/repos.example.json config/repos.json
-  cp config/servers.example.json config/servers.json
-  ./install.sh --compose --sync
-
-
-========================================================================
-6. BOOTSTRAP AUTOMATICO
-========================================================================
-
-Si el servidor ya tiene acceso al repo privado, usar directamente:
-
-  bash bootstrap.sh git@github.com:sxrubyo/omni-core.git /opt/omni-core main
-
-Este comando:
-
-  - instala dependencias base
-  - clona o actualiza el repo
-  - prepara .env y archivos de config si faltan
-  - ejecuta omni sync
-  - levanta Docker Compose
-
-
-========================================================================
-7. ARCHIVOS A REVISAR ANTES DE LEVANTAR
-========================================================================
-
-Editar:
-
-  /opt/omni-core/.env
-  /opt/omni-core/config/repos.json
-  /opt/omni-core/config/servers.json
-  /opt/omni-core/tasks.json
-
-Puntos importantes:
-
-  - OMNI_TELEGRAM_TOKEN
-  - SANTIAGO_CHAT_ID
-  - rutas reales de repositorios en Ubuntu
-  - inventario de servidores remotos para omni sync
-
-
-========================================================================
-8. COMANDOS OPERATIVOS
-========================================================================
-
-Ayuda:
-
-  omni help
-
-Estado:
-
-  omni status
-
-Sincronizar snapshots remotos:
-
-  omni sync
-
-Ver configuracion:
-
-  omni config
-
-Levantar stack:
-
-  docker compose up -d --build
-
-Ver contenedores:
-
-  docker compose ps
-
-Ver logs:
-
-  docker compose logs -f omni-core
-
-Reinstalar o reconciliar:
-
-  ./install.sh --compose --sync
-
-
-========================================================================
-9. VALIDACION POST-MIGRACION
-========================================================================
+### Paso 6. Reconciliar
 
 Ejecutar:
 
-  docker compose ps
-  docker compose logs -f omni-core
-  omni status
-  omni sync
+```bash
+omni fix
+omni sync
+```
 
-Comprobar que existan:
+La idea es que la operación sea repetible y no destructiva.
 
-  /opt/omni-core/config
-  /opt/omni-core/data
-  /opt/omni-core/backups
-  /opt/omni-core/logs
+### Paso 7. Dejar el timer diario
 
+El host debe quedar con una tarea programada cada 24 horas para:
 
-========================================================================
-10. RECOMENDACION FINAL
-========================================================================
+- refrescar el repo
+- ejecutar `omni fix`
+- ejecutar `omni sync`
+- validar salud del stack
 
-El camino mas limpio para futuras migraciones es:
+## 4. Migración desde GitHub privado
 
-  GitHub privado + bootstrap.sh + config/servers.json
+Si el host tiene acceso SSH al repo privado:
 
-Con eso, una nueva instancia Ubuntu puede quedar operativa con:
+```bash
+git clone git@github.com:sxrubyo/omni-core.git /opt/omni-core
+cd /opt/omni-core
+chmod +x install.sh bin/omni bootstrap.sh
+cp .env.example .env
+cp config/repos.example.json config/repos.json
+cp config/servers.example.json config/servers.json
+./install.sh --compose --sync
+```
 
-  git clone o bootstrap
-  ./install.sh --compose --sync
+Actualización posterior:
 
-Fin.
+```bash
+cd /opt/omni-core
+git pull --ff-only
+./install.sh --compose --sync
+omni fix
+omni sync
+```
+
+## 5. Migración desde SCP
+
+Si ya copiaste la carpeta:
+
+```bash
+scp -r omni-core ubuntu@IP_DESTINO:/opt/omni-core
+ssh ubuntu@IP_DESTINO
+cd /opt/omni-core
+chmod +x install.sh bin/omni bootstrap.sh
+./install.sh --compose --sync
+```
+
+## 6. Bootstrap remoto por PowerShell
+
+El archivo `bootstrap.ps1` sirve para lanzar el bootstrap remoto sobre un host Linux por SSH.
+
+Uso típico:
+
+```powershell
+pwsh ./bootstrap.ps1 -TargetHost 1.2.3.4 -User ubuntu -RepoUrl git@github.com:sxrubyo/omni-core.git -Destination /opt/omni-core -Branch main -InstallTimer
+```
+
+Ese wrapper:
+
+- valida que exista `ssh`
+- se conecta al host Linux
+- instala dependencias base
+- clona o actualiza el repo
+- ejecuta `install.sh --compose --sync`
+- puede instalar el timer diario si se solicita con `-InstallTimer`
+
+## 7. Validación después de migrar
+
+Comprobar:
+
+```bash
+omni status
+omni inventory
+omni bundle-create
+omni secrets-export
+omni reconcile --bundle-latest --secrets-latest
+omni purge
+omni sync
+omni fix
+docker compose ps
+docker compose logs -f omni-core
+```
+
+Verificar también:
+
+- `/opt/omni-core/config`
+- `/opt/omni-core/data`
+- `/opt/omni-core/backups`
+- `/opt/omni-core/logs`
+
+## 8. Liberar espacio sin romper el host
+
+Si el host ya quedó reconstruido y necesitas recuperar disco, sin borrar los repos que se pueden volver a clonar desde GitHub:
+
+```bash
+omni purge
+omni purge --yes
+```
+
+Si también quieres borrar secretos restaurados desde bundle:
+
+```bash
+omni purge --include-secrets --yes
+```
+
+Ese comando:
+
+- elimina bundles, snapshots y backups locales de Omni
+- borra estado transferido que no vive en Git
+- limpia artefactos pesados dentro de repos Git como `node_modules`, `.venv`, `build` y `dist`
+
+## 9. Recomendación final
+
+El mejor flujo para reinstalaciones futuras es:
+
+1. repo privado
+2. bundle de estado
+3. secrets pack cifrado
+4. bootstrap remoto
+5. reconcile
+6. timer diario
+
+Con eso se puede levantar Omni Core en otra máquina sin depender de copiar basura ni de restauraciones manuales una por una.

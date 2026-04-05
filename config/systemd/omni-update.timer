@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Omni Core daily maintenance
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=5m
+Unit=omni-update.service
+
+[Install]
+WantedBy=timers.target

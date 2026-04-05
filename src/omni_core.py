@@ -21,17 +21,38 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from pathlib import Path
 
+from bundle_ops import (
+    create_secrets_bundle,
+    create_state_bundle,
+    latest_or_explicit,
+    restore_bundle,
+)
+from cleanup_ops import build_purge_plan, execute_purge
+from host_inventory import (
+    ensure_manifest,
+    expand_path,
+    human_size,
+    load_manifest,
+    save_manifest,
+    scan_home,
+)
+from reconcile_ops import install_systemd_timer, reconcile_host
+
 
 APP_DIR = Path(__file__).resolve().parents[1]
 OMNI_HOME = Path(os.environ.get("OMNI_HOME", APP_DIR)).resolve()
 CONFIG_DIR = Path(os.environ.get("OMNI_CONFIG_DIR", OMNI_HOME / "config")).resolve()
 STATE_DIR = Path(os.environ.get("OMNI_STATE_DIR", OMNI_HOME / "data")).resolve()
 BACKUP_DIR = Path(os.environ.get("OMNI_BACKUP_DIR", OMNI_HOME / "backups")).resolve()
+BUNDLE_DIR = Path(os.environ.get("OMNI_BUNDLE_DIR", BACKUP_DIR / "host-bundles")).resolve()
 LOG_DIR = Path(os.environ.get("OMNI_LOG_DIR", OMNI_HOME / "logs")).resolve()
 ENV_FILE = Path(os.environ.get("OMNI_ENV_FILE", OMNI_HOME / ".env")).resolve()
 TASKS_FILE = Path(os.environ.get("OMNI_TASKS_FILE", OMNI_HOME / "tasks.json")).resolve()
 REPOS_FILE = Path(os.environ.get("OMNI_REPOS_FILE", CONFIG_DIR / "repos.json")).resolve()
 SERVERS_FILE = Path(os.environ.get("OMNI_SERVERS_FILE", CONFIG_DIR / "servers.json")).resolve()
+SYSTEM_MANIFEST_FILE = Path(
+    os.environ.get("OMNI_MANIFEST_FILE", CONFIG_DIR / "system_manifest.json")
+).resolve()
 
 
 def load_env_file(env_path: Path) -> None:
@@ -290,9 +311,9 @@ def box(title: str, lines: List[str], width: int = 72, accent: Optional[str] = N
 def render_help_overview():
     tips = [
         "Quickstart: cp .env.example .env  |  edit config/repos.json  |  docker compose up -d",
-        "Portable state lives inside this folder: config/, data/, backups/, logs/, tasks.json",
-        "To migrate: copy the whole directory to a new server and run ./install.sh --compose",
-        "Keep secrets out of git: Telegram, SSH targets and overrides go in .env",
+        "Portable state stays clean: config/, data/, backups/, logs/, tasks.json and host bundles",
+        "To migrate: inventory -> bundle-create -> secrets-export -> reconcile -> timer-install",
+        "Keep secrets out of git: .env, tokens and SSH material go in the encrypted secrets pack",
     ]
     box("OMNI CONTROL SURFACE", tips, width=84, accent=C.PRIMARY)
 
@@ -660,18 +681,21 @@ class OmniCore:
         self.root_dir = str(OMNI_HOME)
         self.tasks_file = str(TASKS_FILE)
         self.ensure_runtime_dirs()
-        self.repos = self.load_repos()
+        self.manifest_path = SYSTEM_MANIFEST_FILE
+        self.bundle_dir = BUNDLE_DIR
+        self.repo_entries = self.load_repo_entries()
+        self.repos = self.repo_paths_from_entries(self.repo_entries)
         self.servers = self.load_servers()
         self.load_tasks()
 
     def ensure_runtime_dirs(self):
-        for path in (OMNI_HOME, CONFIG_DIR, STATE_DIR, BACKUP_DIR, LOG_DIR):
+        for path in (OMNI_HOME, CONFIG_DIR, STATE_DIR, BACKUP_DIR, BUNDLE_DIR, LOG_DIR):
             path.mkdir(parents=True, exist_ok=True)
 
-    def load_repos(self) -> List[str]:
+    def load_repo_entries(self) -> List[Any]:
         defaults = [
             str((Path.home() / "melissa").resolve()),
-            str((Path.home() / "nova-cli").resolve()),
+            str((Path.home() / "nova-os").resolve()),
             str((Path.home() / ".nova").resolve()),
             str(OMNI_HOME),
         ]
@@ -681,11 +705,22 @@ class OmniCore:
                 repo_data = json.loads(REPOS_FILE.read_text(encoding="utf-8"))
                 repos = repo_data.get("repos", repo_data) if isinstance(repo_data, dict) else repo_data
                 if isinstance(repos, list):
-                    return [str(Path(os.path.expandvars(p)).expanduser()) for p in repos]
+                    return repos
             except Exception as e:
                 debug(f"Failed to load repos.json: {e}")
 
         return defaults
+
+    def repo_paths_from_entries(self, entries: List[Any]) -> List[str]:
+        paths: List[str] = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                raw_path = entry.get("path")
+                if raw_path:
+                    paths.append(str(Path(os.path.expandvars(str(raw_path))).expanduser()))
+            elif isinstance(entry, str):
+                paths.append(str(Path(os.path.expandvars(entry)).expanduser()))
+        return paths
 
     def load_servers(self) -> List[Dict[str, Any]]:
         if not SERVERS_FILE.exists():
@@ -706,6 +741,41 @@ class OmniCore:
                     self.tasks = json.load(f)
             except Exception as e:
                 debug(f"Failed to load tasks.json: {e}")
+
+    def resolve_manifest(self, manifest_path: str = "", home_root: str = "", create: bool = True) -> tuple[Path, Dict[str, Any]]:
+        selected = Path(manifest_path).expanduser() if manifest_path else self.manifest_path
+        resolved_home = expand_path(home_root or str(Path.home()))
+        manifest = ensure_manifest(selected, resolved_home) if create else load_manifest(selected, resolved_home)
+        return selected, manifest
+
+    def resolve_output_path(self, output: str, prefix: str, encrypted: bool = False) -> Path:
+        from bundle_ops import default_bundle_path
+
+        if not output:
+            return default_bundle_path(self.bundle_dir, prefix, encrypted=encrypted)
+        candidate = Path(output).expanduser()
+        if candidate.exists() and candidate.is_dir():
+            return default_bundle_path(candidate, prefix, encrypted=encrypted)
+        if output.endswith("/") or output.endswith("\\"):
+            candidate.mkdir(parents=True, exist_ok=True)
+            return default_bundle_path(candidate, prefix, encrypted=encrypted)
+        if not candidate.suffix:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return default_bundle_path(candidate, prefix, encrypted=encrypted)
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        return candidate
+
+    def read_passphrase(self, env_name: str) -> str:
+        return os.environ.get(env_name or "OMNI_SECRET_PASSPHRASE", "")
+
+    def write_json_output(self, payload: Dict[str, Any], output_path: str = "") -> None:
+        if not output_path:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+        destination = Path(output_path).expanduser()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        ok(f"JSON report saved to {destination}")
 
     def send_telegram(self, message):
         telegram_token = os.getenv("OMNI_TELEGRAM_TOKEN", "")
@@ -952,6 +1022,8 @@ class OmniCore:
         kv("Codename", OMNI_CODENAME)
         kv("Tasks File", self.tasks_file)
         kv("Repos File", str(REPOS_FILE))
+        kv("Manifest", str(self.manifest_path))
+        kv("Bundle Dir", str(self.bundle_dir))
         kv("Logs", str(LOG_DIR / "omni.log"))
         kv("Repos", str(len(self.repos)))
         kv("Telegram", "configured" if os.getenv("OMNI_TELEGRAM_TOKEN") else "not configured")
@@ -990,6 +1062,14 @@ class OmniCore:
         bullet("omni processes - Show PM2 processes", C.PRIMARY)
         bullet("omni install   - Show portable install guide", C.PRIMARY)
         bullet("omni sync      - Pull snapshots from configured servers", C.PRIMARY)
+        bullet("omni inventory - Classify host state vs. secrets vs. noise", C.PRIMARY)
+        bullet("omni bundle-create - Export production-clean state bundle", C.PRIMARY)
+        bullet("omni bundle-restore - Restore latest or explicit state bundle", C.PRIMARY)
+        bullet("omni secrets-export - Export encrypted secrets pack", C.PRIMARY)
+        bullet("omni secrets-import - Import encrypted secrets pack", C.PRIMARY)
+        bullet("omni reconcile - Rebuild host from manifest + bundles", C.PRIMARY)
+        bullet("omni timer-install - Install daily maintenance timer", C.PRIMARY)
+        bullet("omni purge - Delete transferred state and repo artifacts to free disk", C.PRIMARY)
         nl()
 
         print("  " + q(C.W, "ALIASES", bold=True))
@@ -1007,10 +1087,18 @@ class OmniCore:
         bullet("--follow, -f    Follow logs (tail -f)", C.G3)
         bullet("--protocol      Transfer protocol (scp|rsync)", C.G3)
         bullet("--compress      Enable compression for transfer", C.G3)
+        bullet("--manifest      System manifest path", C.G3)
+        bullet("--output        Output file or directory", C.G3)
+        bullet("--bundle        Explicit state bundle path", C.G3)
+        bullet("--secrets       Explicit secrets bundle path", C.G3)
+        bullet("--target-root   Restore target root", C.G3)
+        bullet("--passphrase-env  Env var containing secrets passphrase", C.G3)
+        bullet("--yes           Confirm destructive purge", C.G3)
+        bullet("--include-secrets  Include secret paths in purge", C.G3)
         nl()
 
         hr()
-        bullet("Migration: move this whole folder, then run ./install.sh --compose", C.G3)
+        bullet("Migration: inventory -> bundle -> secrets -> reconcile -> timer", C.G3)
         print("  " + q(C.G3, f"Omni Core v{OMNI_VERSION} '{OMNI_CODENAME}'"))
         print("  " + q(C.G3, "Run 'omni <command>' to execute"))
         print()
@@ -1021,10 +1109,185 @@ class OmniCore:
         section("Portable Install")
         bullet("1. Copy this folder to the target server", C.GRN)
         bullet("2. Run: cp .env.example .env", C.GRN)
-        bullet("3. Edit .env, tasks.json and config/repos.json", C.GRN)
+        bullet("3. Edit .env, config/repos.json, config/servers.json and system_manifest.json", C.GRN)
         bullet("4. Run: ./install.sh --compose", C.GRN)
-        bullet("5. Validate with: docker compose ps and docker compose logs -f omni-core", C.GRN)
+        bullet("5. Export state: omni bundle-create", C.GRN)
+        bullet("6. Export secrets: omni secrets-export", C.GRN)
+        bullet("7. Rebuild host: omni reconcile --bundle-latest --secrets-latest", C.GRN)
         nl()
+
+    def show_inventory(self, manifest_path: str = "", home_root: str = "", output: str = ""):
+        print_logo(compact=True)
+        section("Host Inventory")
+        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True)
+        report = scan_home(home_root or manifest.get("host_root") or str(Path.home()), manifest)
+
+        state_count = len([item for item in report["included"] if item["kind"] == "state"])
+        secret_count = len([item for item in report["included"] if item["kind"] == "secret"])
+        product_count = len([item for item in report["discovered"] if item["classification"] == "product"])
+        noise_count = len([item for item in report["discovered"] if item["classification"] == "noise"])
+
+        kv("Manifest", str(selected_path))
+        kv("Profile", str(manifest.get("profile", "unknown")), color=C.GRN)
+        kv("State Paths", str(state_count), color=C.GRN)
+        kv("Secret Paths", str(secret_count), color=C.YLW)
+        kv("Product Dirs", str(product_count), color=C.GRN)
+        kv("Noise Dirs", str(noise_count), color=C.YLW if noise_count else C.GRN)
+        nl()
+
+        for item in report["included"]:
+            color = C.YLW if item["kind"] == "secret" else C.GRN
+            label = f"{item['kind'].upper()} :: {item['path']}"
+            if item["exists"]:
+                kv(label, human_size(item["size_bytes"]), color=color, key_width=14)
+            else:
+                warn(f"Missing {item['kind']} path: {item['path']}")
+
+        if output:
+            payload = {
+                "manifest_path": str(selected_path),
+                "manifest": manifest,
+                "inventory": report,
+            }
+            self.write_json_output(payload, output)
+
+    def create_state_bundle_cmd(self, manifest_path: str = "", home_root: str = "", output: str = ""):
+        print_logo(compact=True)
+        section("State Bundle")
+        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True)
+        bundle_path = self.resolve_output_path(output, "state_bundle", encrypted=False)
+        created = create_state_bundle(self.bundle_dir, manifest, bundle_path=bundle_path)
+        ok(f"State bundle created: {created}")
+        dim(f"Manifest: {selected_path}")
+
+    def export_secrets_cmd(self, manifest_path: str = "", home_root: str = "", output: str = "", passphrase_env: str = "OMNI_SECRET_PASSPHRASE"):
+        print_logo(compact=True)
+        section("Secrets Pack")
+        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True)
+        passphrase = self.read_passphrase(passphrase_env)
+        bundle_path = self.resolve_output_path(output, "secrets_bundle", encrypted=bool(passphrase))
+        created = create_secrets_bundle(self.bundle_dir, manifest, bundle_path=bundle_path, passphrase=passphrase)
+        ok(f"Secrets bundle created: {created}")
+        dim(f"Manifest: {selected_path}")
+        if not passphrase:
+            warn("No passphrase configured. Secrets pack was exported without encryption.")
+
+    def restore_state_bundle_cmd(self, bundle_path: str = "", target_root: str = "/"):
+        print_logo(compact=True)
+        section("Restore State")
+        resolved = latest_or_explicit(self.bundle_dir, bundle_path, "state_bundle")
+        if not resolved:
+            fail("State bundle not found")
+            return
+        restored = restore_bundle(resolved, target_root=target_root)
+        ok(f"Restored {len(restored)} files from {resolved}")
+        dim(f"Target root: {target_root}")
+
+    def import_secrets_cmd(
+        self,
+        secrets_path: str = "",
+        target_root: str = "/",
+        passphrase_env: str = "OMNI_SECRET_PASSPHRASE",
+    ):
+        print_logo(compact=True)
+        section("Import Secrets")
+        resolved = latest_or_explicit(self.bundle_dir, secrets_path, "secrets_bundle")
+        if not resolved:
+            fail("Secrets bundle not found")
+            return
+        passphrase = self.read_passphrase(passphrase_env)
+        restored = restore_bundle(resolved, target_root=target_root, passphrase=passphrase)
+        ok(f"Restored {len(restored)} secret files from {resolved}")
+        dim(f"Target root: {target_root}")
+
+    def reconcile_host_cmd(
+        self,
+        manifest_path: str = "",
+        home_root: str = "",
+        bundle_path: str = "",
+        secrets_path: str = "",
+        target_root: str = "/",
+        passphrase_env: str = "OMNI_SECRET_PASSPHRASE",
+    ):
+        print_logo(compact=True)
+        section("Host Reconcile")
+        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True)
+        passphrase = self.read_passphrase(passphrase_env)
+        report = reconcile_host(
+            manifest,
+            bundle_path=bundle_path,
+            secrets_path=secrets_path,
+            passphrase=passphrase,
+            target_root=target_root,
+            repos=self.repo_entries,
+        )
+        ok(f"Reconcile completed using {selected_path}")
+        for step in report.get("steps", []):
+            name = step.get("name", "step")
+            if "restored" in step:
+                kv(name, str(step["restored"]), color=C.GRN, key_width=16)
+            elif "changed" in step:
+                kv(name, str(len(step.get("changed", []))), color=C.GRN, key_width=16)
+            elif step.get("results") is not None:
+                kv(name, str(len(step.get("results", []))), color=C.GRN, key_width=16)
+            elif step.get("status"):
+                kv(name, str(step.get("status")), color=C.GRN, key_width=16)
+        nl()
+        self.write_json_output(
+            {
+                "manifest_path": str(selected_path),
+                "report": report,
+            }
+        )
+
+    def install_timer_cmd(self, service_name: str = "omni-update", on_calendar: str = "daily"):
+        print_logo(compact=True)
+        section("Daily Timer")
+        timer_data = install_systemd_timer(omni_home=OMNI_HOME, service_name=service_name, on_calendar=on_calendar)
+        ok(f"Installed {service_name}.timer")
+        kv("Service", timer_data["service"], color=C.GRN)
+        kv("Timer", timer_data["timer"], color=C.GRN)
+
+    def purge_cmd(
+        self,
+        manifest_path: str = "",
+        home_root: str = "",
+        include_secrets: bool = False,
+        confirm: bool = False,
+    ):
+        print_logo(compact=True)
+        section("Purge Installed State")
+        _, manifest = self.resolve_manifest(manifest_path, home_root, create=True)
+        plan = build_purge_plan(
+            manifest,
+            omni_home=OMNI_HOME,
+            bundle_dir=self.bundle_dir,
+            backup_dir=BACKUP_DIR,
+            state_dir=STATE_DIR,
+            log_dir=LOG_DIR,
+            include_secrets=include_secrets,
+        )
+        total = sum(int(item.get("size_bytes", 0)) for item in plan)
+        if not plan:
+            ok("Nothing to purge")
+            return
+
+        kv("Candidates", str(len(plan)), color=C.YLW)
+        kv("Reclaimable", human_size(total), color=C.YLW)
+        nl()
+        for item in plan[:20]:
+            bullet(f"{item['reason']}: {item['path']} ({human_size(int(item['size_bytes']))})", C.G3)
+        if len(plan) > 20:
+            dim(f"... {len(plan) - 20} more paths")
+        nl()
+
+        result = execute_purge(plan, dry_run=not confirm)
+        if not confirm:
+            warn("Dry run only. Re-run with --yes to delete these paths.")
+            return
+
+        ok(f"Removed {len(result['removed'])} paths")
+        kv("Reclaimed", human_size(int(result["reclaimed_bytes"])), color=C.GRN)
 
     def sync_remote_servers(self):
         print_logo(compact=True)
@@ -1244,6 +1507,19 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--debug", action="store_true", help="Debug mode")
     parser.add_argument("--help", "-h", action="store_true", help="Show help")
+    parser.add_argument("--manifest", type=str, default=str(SYSTEM_MANIFEST_FILE), help="Path to system manifest")
+    parser.add_argument("--output", type=str, default="", help="Output file or directory")
+    parser.add_argument("--bundle", type=str, default="", help="Path to state bundle")
+    parser.add_argument("--bundle-latest", action="store_true", help="Use latest state bundle from bundle dir")
+    parser.add_argument("--secrets", type=str, default="", help="Path to secrets bundle")
+    parser.add_argument("--secrets-latest", action="store_true", help="Use latest secrets bundle from bundle dir")
+    parser.add_argument("--target-root", type=str, default="/", help="Restore target root")
+    parser.add_argument("--home-root", type=str, default=str(Path.home()), help="Home root to inventory")
+    parser.add_argument("--passphrase-env", type=str, default="OMNI_SECRET_PASSPHRASE", help="Environment variable containing secrets passphrase")
+    parser.add_argument("--service-name", type=str, default="omni-update", help="Systemd service/timer name")
+    parser.add_argument("--on-calendar", type=str, default="daily", help="systemd OnCalendar value")
+    parser.add_argument("--yes", action="store_true", help="Confirm destructive operations")
+    parser.add_argument("--include-secrets", action="store_true", help="Include secret paths in purge")
 
     args, remaining = parser.parse_known_args()
 
@@ -1297,6 +1573,41 @@ def main():
         core.show_install_guide()
     elif action == "sync":
         core.sync_remote_servers()
+    elif action == "inventory":
+        core.show_inventory(args.manifest, args.home_root, args.output)
+    elif action == "bundle-create":
+        core.create_state_bundle_cmd(args.manifest, args.home_root, args.output)
+    elif action == "bundle-restore":
+        bundle_path = args.bundle
+        if args.bundle_latest and not bundle_path:
+            bundle_path = ""
+        core.restore_state_bundle_cmd(bundle_path, args.target_root)
+    elif action == "secrets-export":
+        core.export_secrets_cmd(args.manifest, args.home_root, args.output, args.passphrase_env)
+    elif action == "secrets-import":
+        secrets_path = args.secrets
+        if args.secrets_latest and not secrets_path:
+            secrets_path = ""
+        core.import_secrets_cmd(secrets_path, args.target_root, args.passphrase_env)
+    elif action == "reconcile":
+        resolved_bundle = ""
+        resolved_secrets = ""
+        if args.bundle or args.bundle_latest:
+            resolved_bundle = str(latest_or_explicit(core.bundle_dir, args.bundle, "state_bundle") or "")
+        if args.secrets or args.secrets_latest:
+            resolved_secrets = str(latest_or_explicit(core.bundle_dir, args.secrets, "secrets_bundle") or "")
+        core.reconcile_host_cmd(
+            args.manifest,
+            args.home_root,
+            resolved_bundle,
+            resolved_secrets,
+            args.target_root,
+            args.passphrase_env,
+        )
+    elif action == "timer-install":
+        core.install_timer_cmd(args.service_name, args.on_calendar)
+    elif action == "purge":
+        core.purge_cmd(args.manifest, args.home_root, args.include_secrets, args.yes)
     else:
         print(f"Unknown action: {action}")
         hint("Run 'omni help' for available commands")

@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "profile": "production-clean",
+  "generated_at": "2026-04-04T00:00:00Z",
+  "host_root": "/home/ubuntu",
+  "state_paths": [
+    "~/melissa",
+    "~/melissa-instances",
+    "~/whatsapp-bridge",
+    "~/nova-os",
+    "~/omni-core",
+    "~/Workflows-n8n",
+    "~/xus-https",
+    "~/.n8n",
+    "~/.nova",
+    "~/.pm2/dump.pm2"
+  ],
+  "secret_paths": [
+    "~/.ssh",
+    "~/.n8n/config",
+    "~/.nova",
+    "~/melissa/.env",
+    "~/melissa-instances/clinica-de-las-americas/.env",
+    "~/whatsapp-bridge/.env",
+    "~/omni-core/.env"
+  ],
+  "install_targets": [
+    "~/melissa",
+    "~/melissa-instances/clinica-de-las-americas",
+    "~/whatsapp-bridge",
+    "~/nova-os/backend",
+    "~/nova-os/frontend",
+    "~/nova-os/n8n-nodes-nova",
+    "~/omni-core"
+  ],
+  "pm2_ecosystems": [
+    "~/omni-core/ecosystem.config.js",
+    "~/whatsapp-bridge/ecosystem.config.cjs"
+  ],
+  "compose_projects": [
+    "~/omni-core",
+    "~/nova-os",
+    "~/xus-https"
+  ],
+  "exclude_patterns": [
+    ".git",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    "node_modules",
+    ".cache",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "*.log",
+    "logs",
+    "tmp",
+    "output",
+    "build",
+    "dist",
+    "backups-test",
+    "data-test",
+    "logs-test"
+  ],
+  "apt_packages": [
+    "git",
+    "rsync",
+    "curl",
+    "ca-certificates",
+    "docker.io",
+    "docker-compose-plugin",
+    "python3",
+    "python3-pip",
+    "python3-venv",
+    "nodejs",
+    "npm",
+    "sqlite3",
+    "jq"
+  ],
+  "npm_global_packages": [
+    "pm2"
+  ]
+}

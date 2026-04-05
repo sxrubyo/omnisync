@@ -1,0 +1,10 @@
+[Unit]
+Description=Omni Core daily reconcile and sync
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__OMNI_HOME__
+EnvironmentFile=-__OMNI_HOME__/.env
+ExecStart=/bin/bash -lc 'cd __OMNI_HOME__ && git pull --ff-only || true && /usr/local/bin/omni fix && /usr/local/bin/omni sync'

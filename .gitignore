@@ -1,0 +1,15 @@
+.env
+config/repos.json
+config/servers.json
+config/system_manifest.json
+logs/omni.log
+backups/
+data/servers/
+src/__pycache__/
+tests/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.tar.gz
+*.tar.gz.enc
+docs/superpowers/plans/

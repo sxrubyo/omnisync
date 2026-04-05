@@ -6,16 +6,20 @@ BIN_TARGET="/usr/local/bin/omni"
 USE_COMPOSE=false
 AUTO_SYNC=false
 USE_PM2=false
+INSTALL_TIMER=false
+TIMER_ON_CALENDAR="${OMNI_TIMER_ON_CALENDAR:-daily}"
 
 for arg in "$@"; do
   case "$arg" in
     --compose) USE_COMPOSE=true ;;
     --sync) AUTO_SYNC=true ;;
     --pm2) USE_PM2=true ;;
+    --timer) INSTALL_TIMER=true ;;
+    --on-calendar=*) TIMER_ON_CALENDAR="${arg#*=}" ;;
   esac
 done
 
-mkdir -p "$ROOT_DIR/config" "$ROOT_DIR/data/servers" "$ROOT_DIR/backups" "$ROOT_DIR/logs"
+mkdir -p "$ROOT_DIR/config" "$ROOT_DIR/config/systemd" "$ROOT_DIR/data/servers" "$ROOT_DIR/backups/host-bundles" "$ROOT_DIR/logs"
 
 if [ ! -f "$ROOT_DIR/.env" ] && [ -f "$ROOT_DIR/.env.example" ]; then
   cp "$ROOT_DIR/.env.example" "$ROOT_DIR/.env"
@@ -27,6 +31,10 @@ fi
 
 if [ ! -f "$ROOT_DIR/config/servers.json" ]; then
   cp "$ROOT_DIR/config/servers.example.json" "$ROOT_DIR/config/servers.json"
+fi
+
+if [ ! -f "$ROOT_DIR/config/system_manifest.json" ] && [ -f "$ROOT_DIR/config/system_manifest.example.json" ]; then
+  cp "$ROOT_DIR/config/system_manifest.example.json" "$ROOT_DIR/config/system_manifest.json"
 fi
 
 chmod +x "$ROOT_DIR/bin/omni"
@@ -49,6 +57,10 @@ if $USE_COMPOSE; then
   docker compose -f "$ROOT_DIR/docker-compose.yml" up -d --build
 fi
 
+if $INSTALL_TIMER; then
+  "$ROOT_DIR/bin/omni" timer-install --service-name omni-update --on-calendar "$TIMER_ON_CALENDAR"
+fi
+
 cat <<EOF
 Omni Core instalado en: $ROOT_DIR
 
@@ -59,10 +71,16 @@ Archivos clave:
   .env
   config/repos.json
   config/servers.json
+  config/system_manifest.json
   tasks.json
 
 Comandos:
   omni install
+  omni inventory
+  omni bundle-create
+  omni secrets-export
+  omni reconcile
+  omni timer-install
   omni sync
   docker compose ps
 EOF

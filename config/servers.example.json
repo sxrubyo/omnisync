@@ -8,7 +8,7 @@
       "protocol": "rsync",
       "paths": [
         "/home/ubuntu/melissa",
-        "/home/ubuntu/nova-cli",
+        "/home/ubuntu/nova-os",
         "/home/ubuntu/.nova",
         "/home/ubuntu/omni-core"
       ],
