@@ -91,6 +91,38 @@ class MigrateFlowOpsTests(unittest.TestCase):
         self.assertEqual(kwargs["bundle_path"], "")
         self.assertEqual(kwargs["secrets_path"], "")
 
+    def test_restore_host_cmd_hydrates_from_remote_source_in_bootstrap_mode(self):
+        core = OmniCore()
+        core.servers = [{"name": "main-ubuntu", "host": "172.31.99.10", "paths": ["/home/ubuntu"]}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            host_dir = root / "host-bundles"
+            auto_dir = root / "auto-bundles"
+            host_dir.mkdir()
+            auto_dir.mkdir()
+            core.bundle_dir = host_dir
+
+            with mock.patch.object(core, "auto_backup_dir", return_value=auto_dir), \
+                 mock.patch.object(core, "init_workspace"), \
+                 mock.patch.object(core, "resolve_manifest", return_value=(root / "manifest.json", {"profile": "full-home"})), \
+                 mock.patch.object(core, "read_passphrase", return_value=""), \
+                 mock.patch.object(core, "confirm_step", return_value=True), \
+                 mock.patch.object(core, "hydrate_from_remote_servers", return_value={"success": True, "results": [{"success": True}]} ) as hydrate_mock, \
+                 mock.patch("omni_core.resolve_installed_inventory_across_dirs", return_value=None), \
+                 mock.patch("omni_core.reconcile_host", return_value={"steps": []}) as reconcile_mock:
+                result = core.restore_host_cmd(
+                    accept_all=True,
+                    show_summary=False,
+                    auto_backup=False,
+                    allow_missing_bundles=True,
+                )
+
+        self.assertTrue(result["success"])
+        hydrate_mock.assert_called_once()
+        reconcile_mock.assert_called_once()
+        self.assertEqual(result["hydration_result"]["results"][0]["success"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

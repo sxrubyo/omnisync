@@ -206,6 +206,7 @@ def build_remote_sync_command(
     *,
     ssh_dir: Path | None = None,
     env: Optional[Dict[str, str]] = None,
+    delete: bool = True,
 ) -> str:
     user = str(server.get("user", "ubuntu"))
     host = str(server.get("host", "")).strip()
@@ -229,8 +230,9 @@ def build_remote_sync_command(
     exclude_flags = " ".join(f"--exclude {shlex.quote(pattern)}" for pattern in excludes)
     transport = build_ssh_transport_command(server, ssh_dir=ssh_dir, env=env)
     remote_spec = f"{user}@{host}:{shlex.quote(remote_path.rstrip('/') + '/')}"
+    delete_flag = " --delete" if delete else ""
     return (
-        f"rsync -az --delete -e {shlex.quote(transport)} {exclude_flags} "
+        f"rsync -az{delete_flag} -e {shlex.quote(transport)} {exclude_flags} "
         f"{remote_spec} {shlex.quote(str(target_dir))}/"
     ).strip()
 
@@ -1631,6 +1633,7 @@ class OmniCore:
                     },
                     remote_path,
                     target_dir,
+                    delete=True,
                 )
 
                 logger.info("Syncing %s:%s", name, remote_path)
@@ -1653,6 +1656,103 @@ class OmniCore:
         return {
             "success": ok_count == len(results) and len(results) > 0,
             "message": f"Synced {ok_count}/{len(results)} remote paths",
+            "results": results,
+        }
+
+    def has_ready_remote_source(self) -> bool:
+        for server in self.servers:
+            host = str(server.get("host", "")).strip()
+            paths = server.get("paths", [])
+            if host and host != "1.2.3.4" and paths:
+                return True
+        return False
+
+    def _run_transfer_cmd_visible(self, cmd: str, label: str) -> Tuple[int, str, str]:
+        info(label)
+        if self.is_interactive():
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                output_lines: List[str] = []
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    text = line.rstrip("\n")
+                    output_lines.append(text)
+                    if text:
+                        print(f"     {text}", flush=True)
+                code = proc.wait()
+                return code, "\n".join(output_lines).strip(), ""
+            except Exception as exc:
+                return -1, "", str(exc)
+        return self.transfer._run_cmd(cmd)
+
+    def hydrate_from_remote_servers(self, target_root: str = "/") -> Dict[str, Any]:
+        logger = logging.getLogger("omni.core")
+        results: List[Dict[str, Any]] = []
+        root = Path(target_root).resolve()
+
+        if not self.servers:
+            return {"success": False, "message": f"No servers configured in {SERVERS_FILE}", "results": results}
+
+        for server in self.servers:
+            name = server.get("name") or server.get("host", "server")
+            user = server.get("user", "ubuntu")
+            host = str(server.get("host", "")).strip()
+            port = int(server.get("port", 22))
+            protocol = server.get("protocol", "rsync")
+            paths = server.get("paths", [])
+            excludes = server.get("excludes", [])
+
+            if not host or host == "1.2.3.4" or not paths:
+                results.append({"server": name, "success": False, "error": "Missing host or paths"})
+                continue
+
+            for remote_path in paths:
+                destination = root / remote_path.lstrip("/")
+                destination.mkdir(parents=True, exist_ok=True)
+                cmd = build_remote_sync_command(
+                    {
+                        "user": user,
+                        "host": host,
+                        "port": port,
+                        "protocol": protocol,
+                        "excludes": excludes,
+                        "identity_file": server.get("identity_file", ""),
+                        "ssh_options": server.get("ssh_options", []),
+                    },
+                    remote_path,
+                    destination,
+                    delete=False,
+                )
+                logger.info("Hydrating %s:%s into %s", name, remote_path, destination)
+                code, out, err = self._run_transfer_cmd_visible(
+                    cmd,
+                    f"Importando contenido remoto {name}:{remote_path} -> {destination}",
+                )
+                error = err if code != 0 else ""
+                if code != 0 and "Permission denied (publickey)" in error:
+                    hint = "Configure `identity_file` in config/servers.json o deja una única clave privada utilizable en ~/.ssh."
+                    error = f"{error}\n{hint}"
+                results.append({
+                    "server": name,
+                    "path": remote_path,
+                    "protocol": protocol,
+                    "success": code == 0,
+                    "target": str(destination),
+                    "error": error,
+                    "output": out if code == 0 else "",
+                })
+
+        ok_count = sum(1 for item in results if item.get("success"))
+        return {
+            "success": ok_count == len(results) and len(results) > 0,
+            "message": f"Imported {ok_count}/{len(results)} remote paths",
             "results": results,
         }
 
@@ -3109,6 +3209,7 @@ class OmniCore:
         runtime_inventory = resolve_installed_inventory_across_dirs(self.bundle_search_dirs())
         effective_manifest = merge_manifest_runtime_inventory(manifest, runtime_inventory)
         bootstrap_only = False
+        hydration_result = None
 
         if not resolved_bundle or not resolved_secrets:
             if not allow_missing_bundles:
@@ -3124,6 +3225,16 @@ class OmniCore:
         if not self.confirm_step("Restore and reconcile this host now?", accept_all=accept_all):
             warn("Restore cancelled.")
             return {"success": False, "reason": "cancelled"}
+
+        if bootstrap_only:
+            if self.has_ready_remote_source():
+                hydration_result = self.hydrate_from_remote_servers(target_root=target_root)
+                if hydration_result.get("success"):
+                    ok(hydration_result.get("message", "Remote content imported"))
+                else:
+                    warn(hydration_result.get("message", "Remote content import was incomplete"))
+            else:
+                warn("Bootstrap mode sin fuente remota real: Omni instalará runtime, pero no puede poblar /home/ubuntu completo sin bundle o servidor origen.")
 
         report = reconcile_host(
             effective_manifest,
@@ -3158,6 +3269,7 @@ class OmniCore:
             summary_lines = [
                 f"Perfil activo: {manifest.get('profile', DEFAULT_PROFILE)}",
                 f"Modo: {'bootstrap' if bootstrap_only else 'bundle-restore'}",
+                f"Contenido remoto importado: {sum(1 for item in (hydration_result or {}).get('results', []) if item.get('success'))}" if hydration_result else "Contenido remoto importado: 0",
                 f"Archivos de estado restaurados: {restore_state.get('restored', 0)}",
                 f"Archivos de secretos restaurados: {restore_secrets.get('restored', 0)}",
                 f"Inventario instalado: {'detectado' if runtime_inventory else 'no'}",
@@ -3179,6 +3291,7 @@ class OmniCore:
             "bootstrap_only": bootstrap_only,
             "used_bundles": bool(resolved_bundle and resolved_secrets),
             "runtime_inventory": runtime_inventory,
+            "hydration_result": hydration_result,
         }
 
     def detect_ip_cmd(self):

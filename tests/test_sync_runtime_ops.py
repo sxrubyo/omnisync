@@ -83,6 +83,31 @@ class SyncRuntimeOpsTests(unittest.TestCase):
             self.assertIn("ubuntu@172.31.34.176:", command)
             self.assertIn("/home/ubuntu/melissa/", command)
 
+    def test_build_remote_sync_command_can_disable_delete_for_live_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ssh_dir = Path(tmp) / ".ssh"
+            ssh_dir.mkdir()
+            private_key = ssh_dir / "n8n_nova"
+            private_key.write_text("PRIVATE", encoding="utf-8")
+            target_dir = Path(tmp) / "restore"
+
+            command = build_remote_sync_command(
+                {
+                    "user": "ubuntu",
+                    "host": "172.31.34.176",
+                    "port": 22,
+                    "protocol": "rsync",
+                    "excludes": [],
+                },
+                "/home/ubuntu",
+                target_dir,
+                ssh_dir=ssh_dir,
+                delete=False,
+            )
+
+            self.assertIn("rsync -az ", command)
+            self.assertNotIn("--delete", command)
+
     def test_resolve_latest_bundle_across_dirs_falls_back_to_auto_bundles(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
