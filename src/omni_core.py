@@ -1543,10 +1543,29 @@ class OmniCore:
             dim(str(config.get("notes")))
         nl()
 
+    def show_agent_catalog(self):
+        print_logo(compact=True)
+        section("Omni Agent Catalog")
+        for provider in provider_catalog():
+            bullet(provider.title, C.GRN)
+            dim(f"  key: {provider.key}")
+            dim(f"  protocol: {provider.protocol}")
+            dim(f"  env: {provider.env_var}")
+            dim(f"  base: {provider.base_url}")
+            dim(f"  default: {provider.default_model}")
+            dim(f"  models: {', '.join(provider.sample_models)}")
+            dim(f"  docs: {provider.docs_url}")
+            if provider.notes:
+                dim(f"  note: {provider.notes}")
+            nl()
+
     def agent_cmd(self, subaction: str = "", *, accept_all: bool = False):
         normalized = str(subaction or "").strip().lower()
         if normalized in {"status", "show"}:
             self.show_agent_status()
+            return
+        if normalized in {"list", "catalog", "providers"}:
+            self.show_agent_catalog()
             return
 
         print_logo(compact=True)
@@ -1573,12 +1592,30 @@ class OmniCore:
         default_idx = 0
         if current:
             default_idx = next((idx for idx, item in enumerate(providers) if item.key == current.get("provider")), 0)
+        provider_icons = {
+            "claude-direct": "🟠",
+            "openai-direct": "🟢",
+            "azure-openai": "🔷",
+            "gemini-direct": "✨",
+            "gemini-openai": "🔁",
+            "openrouter": "🌐",
+            "aws-bedrock": "🟤",
+            "xai-direct": "⚡",
+            "groq": "🚀",
+            "qwen-intl": "🈶",
+            "deepseek-direct": "🧭",
+            "mistral-direct": "🌬️",
+            "cohere-direct": "🧩",
+            "together": "🤝",
+            "perplexity": "🔎",
+            "custom-openai": "🛠️",
+        }
 
         selected = select_menu(
             [item.title for item in providers],
             title="¿Qué proveedor quieres usar para Omni Agent?",
             descriptions=[item.description for item in providers],
-            icons=["🧠", "✨", "🔁", "🌐", "🈶", "🛠️"],
+            icons=[provider_icons.get(item.key, "•") for item in providers],
             default=default_idx,
             show_index=True,
             footer="↑/↓ elegir proveedor · Enter confirmar · número salto directo",
@@ -1668,7 +1705,7 @@ class OmniCore:
         bullet("Crear respaldo real  -> omni capture --profile full-home", C.GRN)
         dim("Luego saca `backups/host-bundles` fuera del host actual.")
         bullet("Configurar Omni Agent  -> omni agent", C.GRN)
-        dim("Selector visual para Claude, Gemini, OpenRouter, Qwen o endpoint compatible.")
+        dim("Selector visual para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible.")
         nl()
 
         section("Omni Core - Command Reference")
@@ -1710,6 +1747,7 @@ class OmniCore:
         bullet("omni detect-ip - Detect current host identity", C.PRIMARY)
         bullet("omni rewrite-ip - Rewrite old host references safely", C.PRIMARY)
         bullet("omni agent     - Configure Omni Agent provider and model", C.PRIMARY)
+        dim("    Use `omni agent list` to inspect the full provider/model catalog")
         bullet("omni bridge    - Create/send/receive migration packs", C.PRIMARY)
         bullet("omni timer-install - Install daily timer + change watcher service", C.PRIMARY)
         bullet("omni purge - Delete transferred state and repo artifacts to free disk", C.PRIMARY)

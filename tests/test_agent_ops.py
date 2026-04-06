@@ -16,11 +16,28 @@ class AgentOpsTests(unittest.TestCase):
     def test_provider_catalog_exposes_expected_options(self):
         keys = {provider.key for provider in provider_catalog()}
         self.assertIn("claude-direct", keys)
+        self.assertIn("openai-direct", keys)
+        self.assertIn("azure-openai", keys)
         self.assertIn("gemini-direct", keys)
         self.assertIn("openrouter", keys)
+        self.assertIn("aws-bedrock", keys)
+        self.assertIn("xai-direct", keys)
+        self.assertIn("groq", keys)
         self.assertIn("qwen-intl", keys)
+        self.assertIn("deepseek-direct", keys)
+        self.assertIn("mistral-direct", keys)
+        self.assertIn("cohere-direct", keys)
+        self.assertIn("together", keys)
+        self.assertIn("perplexity", keys)
         self.assertIn("custom-openai", keys)
         self.assertIsNotNone(get_provider("claude-direct"))
+        self.assertGreaterEqual(len(keys), 15)
+
+    def test_provider_catalog_has_docs_and_models(self):
+        for provider in provider_catalog():
+            self.assertTrue(provider.docs_url.startswith("https://"))
+            self.assertTrue(provider.default_model)
+            self.assertGreaterEqual(len(provider.sample_models), 1)
 
     def test_agent_config_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

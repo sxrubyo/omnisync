@@ -58,7 +58,8 @@ Y además:
 - `omni init`, `omni restore`, `omni migrate` y `omni rewrite-ip --apply` dejan backup automático en `backups/auto-bundles`
 - el timer diario ejecuta `omni backup`, luego `omni fix` y `omni sync`
 - `omni timer-install` deja también `omni-watch.service` para vigilar cambios del scope y disparar backup automático
-- `omni agent` abre el selector visual de proveedor para Claude, Gemini, OpenRouter, Qwen o endpoint compatible
+- `omni agent` abre el selector visual de proveedor para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible
+- `omni agent list` te deja ver todo el catálogo sin entrar al wizard
 
 Tu caso correcto es este:
 

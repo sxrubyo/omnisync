@@ -133,7 +133,8 @@ Además:
 - `omni init`, `omni restore`, `omni migrate` y `omni rewrite-ip --apply` crean backup automático en `backups/auto-bundles`
 - el timer diario `omni-update.timer` ahora ejecuta primero `omni backup`, luego `omni fix` y `omni sync`
 - `omni timer-install` deja también `omni-watch.service`, que vigila cambios en el scope del manifest y dispara backup automático con cooldown
-- `omni agent` abre un selector visual para configurar Claude, Gemini, OpenRouter, Qwen o un endpoint OpenAI-compatible propio
+- `omni agent` abre un selector visual para configurar Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o un endpoint OpenAI-compatible propio
+- `omni agent list` imprime el catálogo completo de proveedores, modelos sugeridos y documentación oficial
 
 ## Modos de instalación
 

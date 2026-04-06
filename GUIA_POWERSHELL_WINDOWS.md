@@ -36,7 +36,8 @@ Cuando el host ya tiene `capture summary`, Omni puede trabajar mucho más solo:
 - `omni init`, `omni restore`, `omni migrate` y `omni rewrite-ip --apply` dejan backup automático en `backups/auto-bundles`
 - el timer diario también corre backup antes de `fix` y `sync`
 - `omni timer-install` deja también `omni-watch.service` para vigilar cambios del scope
-- `omni agent` abre el selector visual de proveedor para Claude, Gemini, OpenRouter, Qwen o endpoint compatible
+- `omni agent` abre el selector visual de proveedor para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible
+- `omni agent list` imprime el catálogo completo de providers/modelos desde el host remoto
 
 Si no quieres entrar en claves, `pem` o SSH remoto desde PowerShell, usa mejor esta guía:
 

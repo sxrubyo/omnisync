@@ -95,7 +95,7 @@ def build_flow_options(platform_info: PlatformInfo | None = None) -> list[FlowOp
         FlowOption("restore", "Restore", "Restore a target host from bundle plus secrets.", recommended == "restore"),
         FlowOption("migrate", "Migrate", "Rebuild or move a full host end to end.", recommended == "migrate"),
         FlowOption("doctor", "Doctor", "Inspect health, disk, timers and cleanup opportunities.", recommended == "doctor"),
-        FlowOption("agent", "Agent", "Configure Omni Agent with Claude, Gemini, OpenRouter, Qwen or a custom endpoint.", recommended == "agent"),
+        FlowOption("agent", "Agent", "Configure Omni Agent with Claude, OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity or a custom endpoint.", recommended == "agent"),
         FlowOption("advanced", "Advanced", "Use lower-level Omni commands directly.", recommended == "advanced"),
     ]
 
