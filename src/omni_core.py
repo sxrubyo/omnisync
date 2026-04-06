@@ -50,6 +50,13 @@ from host_inventory import (
 from ip_rewrite_ops import apply_rewrite_plan, build_rewrite_plan, detect_host_identity, preview_rewrite_plan
 from onboarding_ops import build_flow_options, normalize_flow_choice, should_accept_all
 from platform_ops import detect_platform_info
+from playbook_ops import (
+    DEFAULT_REF_NAME,
+    DEFAULT_REMOTE_USER,
+    DEFAULT_REPO_URL,
+    build_examples_catalog,
+    build_powershell_auto_command,
+)
 from reconcile_ops import install_systemd_service, install_systemd_timer, reconcile_host
 from watch_ops import capture_watch_snapshot, load_watch_snapshot, save_watch_snapshot, summarize_snapshot_diff
 
@@ -227,6 +234,9 @@ ALIASES = {
     "proc": "processes", "repo": "repos", "up": "update", "cl": "clean",
     "i": "init",
     "tr": "transfer",
+    "ex": "examples",
+    "pb": "examples",
+    "a": "auto",
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1559,6 +1569,55 @@ class OmniCore:
                 dim(f"  note: {provider.notes}")
             nl()
 
+    def show_examples(self):
+        print_logo(tagline=True)
+        section("Omni Playbooks")
+        for example in build_examples_catalog():
+            bullet(example.title, C.GRN)
+            dim(example.description)
+            dim(f"  Cuándo usarlo: {example.when_to_use}")
+            print()
+            print("  " + q(C.PRIMARY, example.command))
+            nl()
+
+    def show_auto_status(
+        self,
+        *,
+        powershell: bool = False,
+        target_host: str = "",
+        remote_user: str = DEFAULT_REMOTE_USER,
+        identity_file: str = "",
+        repo_url: str = DEFAULT_REPO_URL,
+        ref_name: str = DEFAULT_REF_NAME,
+        destination: str = "",
+    ):
+        print_logo(compact=True)
+        section("Omni Auto")
+        kv("Timer service", "omni-update.timer", color=C.GRN)
+        kv("Watch service", "omni-watch.service", color=C.GRN)
+        kv("Auto backup", "on change + every 24h", color=C.GRN)
+        nl()
+        if powershell:
+            info("Comando listo para PowerShell")
+            dim("Si omites -Destination, bootstrap.ps1 escanea el host remoto y recomienda la ruta.")
+            print()
+            print(q(C.PRIMARY, build_powershell_auto_command(
+                target_host=target_host,
+                remote_user=remote_user,
+                identity_file=identity_file,
+                repo_url=repo_url,
+                ref_name=ref_name,
+                destination=destination,
+                install_timer=True,
+            )))
+            nl()
+            return
+
+        bullet("Playbooks guiados  -> omni examples", C.GRN)
+        bullet("One-liner PowerShell -> omni auto --p", C.GRN)
+        dim("Añade --target-host y --identity-file si quieres que salga listo para pegar.")
+        nl()
+
     def agent_cmd(self, subaction: str = "", *, accept_all: bool = False):
         normalized = str(subaction or "").strip().lower()
         if normalized in {"status", "show"}:
@@ -1706,6 +1765,10 @@ class OmniCore:
         dim("Luego saca `backups/host-bundles` fuera del host actual.")
         bullet("Configurar Omni Agent  -> omni agent", C.GRN)
         dim("Selector visual para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible.")
+        bullet("Ver playbooks listos  -> omni examples", C.GRN)
+        dim("Comandos listos para captura, migración, bridge, rewrite y agent.")
+        bullet("One-liner PowerShell  -> omni auto --p", C.GRN)
+        dim("Imprime el comando de auto-actualización listo para pegar en PowerShell.")
         nl()
 
         section("Omni Core - Command Reference")
@@ -1748,6 +1811,8 @@ class OmniCore:
         bullet("omni rewrite-ip - Rewrite old host references safely", C.PRIMARY)
         bullet("omni agent     - Configure Omni Agent provider and model", C.PRIMARY)
         dim("    Use `omni agent list` to inspect the full provider/model catalog")
+        bullet("omni examples  - Show ready-to-copy operational playbooks", C.PRIMARY)
+        bullet("omni auto      - Show automation status or emit PowerShell auto-update command", C.PRIMARY)
         bullet("omni bridge    - Create/send/receive migration packs", C.PRIMARY)
         bullet("omni timer-install - Install daily timer + change watcher service", C.PRIMARY)
         bullet("omni purge - Delete transferred state and repo artifacts to free disk", C.PRIMARY)
@@ -2873,7 +2938,7 @@ logging.basicConfig(
 logger = logging.getLogger("omni.core")
 
 def main():
-    parser = argparse.ArgumentParser(description="Omni Core - The Supreme Coordinator", add_help=False)
+    parser = argparse.ArgumentParser(description="Omni Core - The Supreme Coordinator", add_help=False, allow_abbrev=False)
     parser.add_argument("action", nargs="?", default="start", help="Action to perform")
     parser.add_argument("--interval", type=int, default=300, help="Interval for watch mode (seconds)")
     parser.add_argument("--lines", type=int, default=50, help="Number of log lines")
@@ -2901,8 +2966,14 @@ def main():
     parser.add_argument("--target-public-ip", type=str, default="", help="Target public IP for rewrite/migrate")
     parser.add_argument("--target-private-ip", type=str, default="", help="Target private IP for rewrite/migrate")
     parser.add_argument("--target-hostname", type=str, default="", help="Target hostname/FQDN for rewrite/migrate")
+    parser.add_argument("--target-host", type=str, default="", help="Remote host for generated PowerShell auto commands")
+    parser.add_argument("--remote-user", type=str, default=DEFAULT_REMOTE_USER, help="Remote SSH user for generated PowerShell auto commands")
+    parser.add_argument("--identity-file", type=str, default="", help="Identity file for generated PowerShell auto commands")
+    parser.add_argument("--repo-url", type=str, default=DEFAULT_REPO_URL, help="Repository URL for generated PowerShell auto commands")
+    parser.add_argument("--ref-name", type=str, default=DEFAULT_REF_NAME, help="Git branch/ref for generated PowerShell auto commands")
     parser.add_argument("--context-lines", type=int, default=2, help="Context lines for rewrite previews")
     parser.add_argument("--apply", action="store_true", help="Apply changes for rewrite-style commands")
+    parser.add_argument("--powershell", "--p", "-p", action="store_true", help="Render PowerShell-oriented output where supported")
     parser.add_argument("--skip-rewrite", action="store_true", help="Skip automatic host reference rewrite during migrate")
     parser.add_argument("--dest", type=str, default="", help="Remote destination for bridge send")
 
@@ -3022,6 +3093,18 @@ def main():
         elif action == "agent":
             agent_action = remaining[0] if remaining else ""
             core.agent_cmd(agent_action, accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
+        elif action in {"examples", "playbook", "playbooks"}:
+            core.show_examples()
+        elif action == "auto":
+            core.show_auto_status(
+                powershell=args.powershell,
+                target_host=args.target_host,
+                remote_user=args.remote_user,
+                identity_file=args.identity_file,
+                repo_url=args.repo_url,
+                ref_name=args.ref_name,
+                destination=args.dest,
+            )
         elif action == "bridge":
             bridge_action = remaining[0] if remaining else ""
             if bridge_action in {"create", ""}:

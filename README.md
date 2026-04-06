@@ -16,6 +16,13 @@ omni start
 
 Eso abre el flujo guiado para elegir entre `bridge`, `capture`, `restore`, `migrate`, `doctor` o `agent`.
 
+Si quieres ver playbooks listos o sacar un comando PowerShell de auto-actualización:
+
+```bash
+omni examples
+omni auto --p
+```
+
 ## Qué resuelve
 
 Omni sirve para:
@@ -385,6 +392,58 @@ En Omni:
 - Anthropic directo usa el catálogo oficial directo de Anthropic
 - Claude 4.6 quedó modelado por `AWS Bedrock`
 
+## Omni Examples
+
+`omni examples` imprime playbooks listos para copiar.
+
+Incluye:
+
+- arranque guiado
+- captura `full-home`
+- migración completa
+- diagnóstico rápido
+- rewrite de IP y hostname
+- configuración de `omni agent`
+- bridge send
+- purge
+
+Uso:
+
+```bash
+omni examples
+```
+
+## Omni Auto
+
+`omni auto` resume la automatización activa del host.
+
+Uso básico:
+
+```bash
+omni auto
+```
+
+Para sacar el one-liner de PowerShell listo para pegar:
+
+```bash
+omni auto --p
+```
+
+Con valores reales:
+
+```bash
+omni auto --p \
+  --target-host ec2-54-160-79-60.compute-1.amazonaws.com \
+  --identity-file "C:\\Users\\santi\\Downloads\\materia oscura\\llave_maestra_aws.pem" \
+  --dest /home/ubuntu/omni-core
+```
+
+Qué hace:
+
+- imprime un `pwsh .\bootstrap.ps1 ...` listo para usar
+- si omites `--dest`, `bootstrap.ps1` escanea el host remoto y recomienda la ruta
+- deja `-InstallTimer` activo para que la actualización remota quede automatizada
+
 ## Mapa de comandos
 
 ### Entrada y flujos
@@ -393,6 +452,8 @@ En Omni:
 |---|---|---|
 | `omni` | abre el asistente guiado | casi siempre |
 | `omni start` | igual que `omni` | cuando quieres ser explícito |
+| `omni examples` | imprime playbooks listos para copiar | cuando quieres guía rápida sin abrir todo el README |
+| `omni auto` | muestra automatización o genera el one-liner PowerShell | cuando quieres mantener o actualizar el host con un solo carril |
 | `omni doctor` | auditoría guiada del host | antes de migrar o después de restaurar |
 | `omni capture` | crea recovery pack del perfil activo | antes de apagar o mover un host |
 | `omni restore` | restaura estado + secretos | cuando ya tienes bundles en el host nuevo |

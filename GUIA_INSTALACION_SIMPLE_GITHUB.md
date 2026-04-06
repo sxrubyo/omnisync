@@ -60,6 +60,8 @@ Y además:
 - `omni timer-install` deja también `omni-watch.service` para vigilar cambios del scope y disparar backup automático
 - `omni agent` abre el selector visual de proveedor para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible
 - `omni agent list` te deja ver todo el catálogo sin entrar al wizard
+- `omni examples` imprime playbooks listos para copiar
+- `omni auto --p` imprime el comando PowerShell de auto-actualización listo para pegar
 
 Tu caso correcto es este:
 

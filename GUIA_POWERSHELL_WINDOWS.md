@@ -38,6 +38,8 @@ Cuando el host ya tiene `capture summary`, Omni puede trabajar mucho más solo:
 - `omni timer-install` deja también `omni-watch.service` para vigilar cambios del scope
 - `omni agent` abre el selector visual de proveedor para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible
 - `omni agent list` imprime el catálogo completo de providers/modelos desde el host remoto
+- `omni examples` imprime playbooks listos para copiar desde el host
+- `omni auto --p` imprime el one-liner de PowerShell para auto-actualizar el host remoto
 
 Si no quieres entrar en claves, `pem` o SSH remoto desde PowerShell, usa mejor esta guía:
 
@@ -49,6 +51,20 @@ El wrapper de entrada es:
 
 El bootstrap real ocurre en el servidor Linux.
 PowerShell solo actúa como lanzador remoto por SSH.
+
+## Atajo nuevo: sacar el comando PowerShell listo
+
+Si Omni ya está instalado en el host, puedes pedirle el comando listo para pegar:
+
+```bash
+omni auto --p
+```
+
+Con datos reales:
+
+```bash
+omni auto --p --target-host ec2-54-160-79-60.compute-1.amazonaws.com --identity-file "C:\Users\santi\Downloads\materia oscura\llave_maestra_aws.pem" --dest /home/ubuntu/omni-core
+```
 
 ## Qué necesitas antes
 
