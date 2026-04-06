@@ -117,6 +117,12 @@ def build_compose_up_command(compose_file: Path) -> str:
     return f"{prefix}{compose_bin} -f {shlex.quote(str(compose_file))} up -d --build"
 
 
+def build_compose_down_command(compose_file: Path) -> str:
+    compose_bin = detect_compose_command()
+    prefix = "sudo " if docker_requires_sudo() else ""
+    return f"{prefix}{compose_bin} -f {shlex.quote(str(compose_file))} down --remove-orphans"
+
+
 def apt_package_installed(name: str) -> bool:
     code, _, _ = run_cmd(f"dpkg -s {name}")
     return code == 0
@@ -404,8 +410,21 @@ def start_compose_projects(projects: List[str]) -> List[Dict[str, Any]]:
             cwd=str(project),
             label=f"Levantando Compose en {project}",
         )
+        combined_error = (err or out or "").strip()
+        if code != 0 and "ContainerConfig" in combined_error:
+            run_visible_cmd(
+                build_compose_down_command(compose_file),
+                cwd=str(project),
+                label=f"Recuperando Compose en {project} tras fallo de ContainerConfig",
+            )
+            code, out, err = run_visible_cmd(
+                build_compose_up_command(compose_file),
+                cwd=str(project),
+                label=f"Reintentando Compose en {project}",
+            )
+            combined_error = (err or out or "").strip()
         if code != 0:
-            raise RuntimeError(err or out or f"docker compose failed for {project}")
+            raise RuntimeError(combined_error or f"docker compose failed for {project}")
         results.append({"path": str(project), "status": "started", "compose_file": str(compose_file)})
     return results
 

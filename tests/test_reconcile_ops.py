@@ -11,6 +11,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from reconcile_ops import (  # noqa: E402
+    build_compose_down_command,
     build_compose_up_command,
     detect_compose_command,
     docker_requires_sudo,
@@ -18,6 +19,7 @@ from reconcile_ops import (  # noqa: E402
     ensure_docker_service_running,
     install_apt_packages,
     install_npm_global_packages,
+    start_compose_projects,
 )
 
 
@@ -57,6 +59,17 @@ class ReconcileOpsTests(unittest.TestCase):
 
             self.assertEqual(command, f"sudo docker-compose -f {str(compose_file)} up -d --build")
 
+    def test_build_compose_down_command_uses_sudo_when_docker_socket_requires_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compose_file = Path(tmp) / "docker-compose.yml"
+            compose_file.write_text("services: {}\n", encoding="utf-8")
+
+            with mock.patch("reconcile_ops.detect_compose_command", return_value="docker-compose"), \
+                 mock.patch("reconcile_ops.docker_requires_sudo", return_value=True):
+                command = build_compose_down_command(compose_file)
+
+            self.assertEqual(command, f"sudo docker-compose -f {str(compose_file)} down --remove-orphans")
+
     def test_docker_requires_sudo_when_socket_not_writable(self):
         with mock.patch("reconcile_ops.command_exists", side_effect=lambda name: name == "sudo"), \
              mock.patch("reconcile_ops.Path.exists", return_value=True), \
@@ -85,6 +98,33 @@ class ReconcileOpsTests(unittest.TestCase):
 
         self.assertTrue(result["changed"])
         self.assertEqual(result["status"], "started")
+
+    def test_start_compose_projects_recovers_from_containerconfig_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            compose_file = project / "docker-compose.yml"
+            compose_file.write_text("services: {}\n", encoding="utf-8")
+
+            run_calls = []
+
+            def fake_visible(cmd: str, cwd=None, label=""):
+                run_calls.append((cmd, label))
+                if " up -d --build" in cmd and len([c for c, _ in run_calls if " up -d --build" in c]) == 1:
+                    return (1, "KeyError: 'ContainerConfig'", "")
+                if " down --remove-orphans" in cmd:
+                    return (0, "removed", "")
+                if " up -d --build" in cmd:
+                    return (0, "started", "")
+                raise AssertionError(f"Unexpected command: {cmd}")
+
+            with mock.patch("reconcile_ops.ensure_docker_service_running"), \
+                 mock.patch("reconcile_ops.build_compose_up_command", return_value="docker-compose -f docker-compose.yml up -d --build"), \
+                 mock.patch("reconcile_ops.build_compose_down_command", return_value="docker-compose -f docker-compose.yml down --remove-orphans"), \
+                 mock.patch("reconcile_ops.run_visible_cmd", side_effect=fake_visible):
+                result = start_compose_projects([str(project)])
+
+        self.assertEqual(result[0]["status"], "started")
+        self.assertTrue(any("down --remove-orphans" in cmd for cmd, _ in run_calls))
 
     def test_install_apt_packages_falls_back_to_docker_compose_package(self):
         state = {"updated": False}
