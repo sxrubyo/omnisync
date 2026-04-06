@@ -45,6 +45,8 @@ else
   ln -sf "$ROOT_DIR/bin/omni" "$BIN_TARGET"
 fi
 
+"$ROOT_DIR/bin/omni" init >/dev/null || true
+
 if $AUTO_SYNC; then
   "$ROOT_DIR/bin/omni" sync || true
 fi
@@ -65,7 +67,7 @@ cat <<EOF
 Omni Core instalado en: $ROOT_DIR
 
 Modo automático:
-  install.sh --compose --sync
+  install.sh --compose --sync --timer
 
 Archivos clave:
   .env
@@ -75,6 +77,12 @@ Archivos clave:
   tasks.json
 
 Comandos:
+  omni
+  omni start
+  omni doctor
+  omni capture
+  omni restore
+  omni migrate
   omni install
   omni inventory
   omni bundle-create

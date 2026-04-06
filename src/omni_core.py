@@ -27,6 +27,7 @@ from bundle_ops import (
     latest_or_explicit,
     restore_bundle,
 )
+from bridge_ops import load_capture_summary, summarize_bundle_pair, write_capture_summary
 from cleanup_ops import build_purge_plan, execute_purge
 from host_inventory import (
     ensure_manifest,
@@ -36,6 +37,9 @@ from host_inventory import (
     save_manifest,
     scan_home,
 )
+from ip_rewrite_ops import apply_rewrite_plan, build_rewrite_plan, detect_host_identity, preview_rewrite_plan
+from onboarding_ops import build_flow_options, build_flow_prompt, normalize_flow_choice, should_accept_all
+from platform_ops import detect_platform_info
 from reconcile_ops import install_systemd_timer, reconcile_host
 
 
@@ -778,6 +782,41 @@ class OmniCore:
         destination.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         ok(f"JSON report saved to {destination}")
 
+    def capture_output_dir(self, output: str = "") -> Path:
+        if not output:
+            self.bundle_dir.mkdir(parents=True, exist_ok=True)
+            return self.bundle_dir
+        candidate = Path(output).expanduser()
+        if candidate.suffix:
+            candidate = candidate.parent
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
+    def is_interactive(self) -> bool:
+        return bool(getattr(sys.stdin, "isatty", lambda: False)()) and bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+    def prompt_text(self, prompt: str, default: str = "") -> str:
+        if not self.is_interactive():
+            return default
+        suffix = f" [{default}]" if default else ""
+        try:
+            answer = input(f"  {prompt}{suffix}: ").strip()
+        except EOFError:
+            return default
+        return answer or default
+
+    def confirm_step(self, prompt: str, accept_all: bool = False, default: bool = True) -> bool:
+        if accept_all or not self.is_interactive():
+            return default
+        default_hint = "Y/n" if default else "y/N"
+        try:
+            answer = input(f"  {prompt} [{default_hint}]: ").strip().lower()
+        except EOFError:
+            return default
+        if not answer:
+            return default
+        return answer in {"y", "yes", "s", "si", "sí"}
+
     def send_telegram(self, message):
         telegram_token = os.getenv("OMNI_TELEGRAM_TOKEN", "")
         chat_id = os.getenv("SANTIAGO_CHAT_ID", "")
@@ -1048,6 +1087,10 @@ class OmniCore:
         bullet("omni watch     - Run in continuous mode", C.GRN)
         bullet("omni status    - Show system status", C.GRN)
         bullet("omni logs      - View Omni logs", C.GRN)
+        bullet("omni doctor    - Run the guided health and recovery audit", C.GRN)
+        bullet("omni capture   - Build a full recovery pack", C.GRN)
+        bullet("omni restore   - Restore from latest bundle + secrets", C.GRN)
+        bullet("omni migrate   - Rebuild this host end to end", C.GRN)
         nl()
 
         print("  " + q(C.W, "ADVANCED COMMANDS", bold=True))
@@ -1070,6 +1113,9 @@ class OmniCore:
         bullet("omni secrets-export - Export encrypted secrets pack", C.PRIMARY)
         bullet("omni secrets-import - Import encrypted secrets pack", C.PRIMARY)
         bullet("omni reconcile - Rebuild host from manifest + bundles", C.PRIMARY)
+        bullet("omni detect-ip - Detect current host identity", C.PRIMARY)
+        bullet("omni rewrite-ip - Rewrite old host references safely", C.PRIMARY)
+        bullet("omni bridge    - Create/send/receive migration packs", C.PRIMARY)
         bullet("omni timer-install - Install daily maintenance timer", C.PRIMARY)
         bullet("omni purge - Delete transferred state and repo artifacts to free disk", C.PRIMARY)
         nl()
@@ -1102,6 +1148,7 @@ class OmniCore:
         hr()
         bullet("Migration: inventory -> bundle -> secrets -> reconcile -> timer", C.G3)
         bullet("Quickstart: init -> install.sh --compose --sync --timer", C.G3)
+        bullet("Default entrypoint: run `omni` and choose bridge/capture/restore/migrate", C.G3)
         print("  " + q(C.G3, f"Omni Core v{OMNI_VERSION} '{OMNI_CODENAME}'"))
         print("  " + q(C.G3, "Run 'omni <command>' to execute"))
         print()
@@ -1141,6 +1188,26 @@ class OmniCore:
         else:
             existing.append(TASKS_FILE)
 
+        servers_path = CONFIG_DIR / "servers.json"
+        if servers_path.exists():
+            try:
+                payload = json.loads(servers_path.read_text(encoding="utf-8"))
+                servers = payload.get("servers", []) if isinstance(payload, dict) else []
+                host_identity = detect_host_identity()
+                replacement_host = host_identity.public_ip or host_identity.private_ip or host_identity.hostname
+                changed = False
+                if replacement_host:
+                    for server in servers:
+                        if str(server.get("host", "")).strip() == "1.2.3.4":
+                            server["host"] = replacement_host
+                            changed = True
+                    if changed:
+                        servers_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                        self.servers = self.load_servers()
+                        ok(f"Updated placeholder host in {servers_path} -> {replacement_host}")
+            except Exception as err:
+                warn(f"Failed to normalize servers.json automatically: {err}")
+
         for path in created:
             ok(f"Created {path}")
         for path in existing:
@@ -1155,6 +1222,319 @@ class OmniCore:
         dim("3. Validate with omni status and omni inventory")
         nl()
 
+    def start_guided(self, *, accept_all: bool = False) -> None:
+        info_obj = detect_platform_info()
+        effective_accept_all = should_accept_all(accept_all=accept_all, env=os.environ)
+        chosen_flow = ""
+        requested_flow_raw = os.environ.get("OMNI_START_FLOW", "").strip()
+        requested_flow = normalize_flow_choice(requested_flow_raw) if requested_flow_raw else ""
+
+        print_logo(tagline=False)
+        render_help_overview()
+        section("Guided Start")
+        kv("Detected Platform", f"{info_obj.system} / {info_obj.shell} / {info_obj.package_manager}", color=C.GRN)
+        kv("Mode", "accept-all" if effective_accept_all else "guided", color=C.YLW if effective_accept_all else C.GRN)
+        nl()
+
+        for option in build_flow_options(info_obj):
+            suffix = " (recommended)" if option.recommended else ""
+            bullet(f"{option.key}: {option.title}{suffix}", C.PRIMARY if option.recommended else C.G3, bold=option.recommended)
+            dim(option.description)
+        nl()
+
+        if requested_flow:
+            chosen_flow = requested_flow
+            info(f"Using OMNI_START_FLOW={chosen_flow}")
+        elif effective_accept_all or not self.is_interactive():
+            warn("No interactive terminal detected for `omni start`.")
+            hint("Use an explicit command such as `omni capture --accept-all` or set OMNI_START_FLOW.")
+            return
+        else:
+            print("  " + q(C.G2, build_flow_prompt(info_obj)))
+            nl()
+            chosen_flow = normalize_flow_choice(self.prompt_text("Choose flow", "bridge"))
+
+        if chosen_flow == "advanced":
+            self.show_help()
+            return
+        if chosen_flow == "bridge":
+            self.bridge_mode(accept_all=effective_accept_all)
+            return
+        if chosen_flow == "capture":
+            self.capture_host_cmd(accept_all=effective_accept_all)
+            return
+        if chosen_flow == "restore":
+            self.restore_host_cmd(accept_all=effective_accept_all, install_timer=effective_accept_all)
+            return
+        if chosen_flow == "migrate":
+            self.migrate_host_cmd(accept_all=effective_accept_all, install_timer=effective_accept_all)
+            return
+        if chosen_flow == "doctor":
+            self.show_doctor()
+            return
+        self.show_help()
+
+    def show_doctor(self):
+        print_logo(compact=True)
+        section("Doctor")
+
+        disk = self.fixer.check_disk_space()
+        mem = self.fixer.check_memory()
+        pm2 = self.fixer.check_and_fix_pm2()
+
+        kv("Disk", disk.get("message", "Unknown"), color=C.GRN if disk.get("status") == "ok" else C.YLW)
+        kv("Memory", mem.get("message", "Unknown"), color=C.GRN if mem.get("status") == "ok" else C.YLW)
+        kv("PM2", pm2.get("message", "Unknown"), color=C.GRN if not pm2.get("restarted") else C.YLW)
+        kv("Manifest", str(self.manifest_path), color=C.GRN)
+        kv("Bundle Dir", str(self.bundle_dir), color=C.GRN)
+        nl()
+
+        bundle_summary = summarize_bundle_pair(bundle_dir=self.bundle_dir)
+        if bundle_summary.get("state_bundle"):
+            kv("Latest State Bundle", str(bundle_summary["state_bundle"]["path"]), color=C.GRN)
+        else:
+            warn("No state bundle found yet. Run `omni capture`.")
+        if bundle_summary.get("secrets_bundle"):
+            kv("Latest Secrets Bundle", str(bundle_summary["secrets_bundle"]["path"]), color=C.GRN)
+        else:
+            warn("No secrets bundle found yet. Run `omni capture`.")
+        nl()
+
+        if not self.servers:
+            warn(f"No remote servers configured in {SERVERS_FILE}")
+        else:
+            for server in self.servers:
+                host = str(server.get("host", ""))
+                if host == "1.2.3.4":
+                    warn(f"Placeholder host still present in servers.json for {server.get('name', 'server')}")
+                else:
+                    ok(f"Remote server configured: {server.get('name', host)} -> {host}")
+
+    def capture_host_cmd(
+        self,
+        manifest_path: str = "",
+        home_root: str = "",
+        output: str = "",
+        passphrase_env: str = "OMNI_SECRET_PASSPHRASE",
+        *,
+        accept_all: bool = False,
+    ):
+        print_logo(compact=True)
+        section("Capture Recovery Pack")
+        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True)
+        bundle_dir = self.capture_output_dir(output)
+        passphrase = self.read_passphrase(passphrase_env)
+
+        if not self.confirm_step("Create state bundle now?", accept_all=accept_all):
+            warn("Capture cancelled before state bundle creation.")
+            return
+        state_bundle = create_state_bundle(bundle_dir, manifest)
+        ok(f"State bundle created: {state_bundle}")
+
+        if not self.confirm_step("Create secrets bundle now?", accept_all=accept_all):
+            warn("Capture stopped before secrets bundle creation.")
+            return
+        secrets_bundle = create_secrets_bundle(bundle_dir, manifest, passphrase=passphrase)
+        ok(f"Secrets bundle created: {secrets_bundle}")
+
+        summary_path = write_capture_summary(
+            bundle_dir=bundle_dir,
+            manifest_path=selected_path,
+            state_bundle=state_bundle,
+            secrets_bundle=secrets_bundle,
+        )
+        ok(f"Capture summary written: {summary_path}")
+        if not passphrase:
+            warn("No passphrase configured. Secrets bundle was exported without encryption.")
+
+        summary = summarize_bundle_pair(bundle_dir=bundle_dir, state_bundle=str(state_bundle), secrets_bundle=str(secrets_bundle))
+        self.write_json_output(summary)
+
+    def restore_host_cmd(
+        self,
+        manifest_path: str = "",
+        home_root: str = "",
+        bundle_path: str = "",
+        secrets_path: str = "",
+        target_root: str = "/",
+        passphrase_env: str = "OMNI_SECRET_PASSPHRASE",
+        *,
+        accept_all: bool = False,
+        install_timer: bool = False,
+        on_calendar: str = "daily",
+    ):
+        print_logo(compact=True)
+        section("Restore Host")
+        self.init_workspace()
+        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True)
+        passphrase = self.read_passphrase(passphrase_env)
+        resolved_bundle = str(latest_or_explicit(self.bundle_dir, bundle_path, "state_bundle") or "")
+        resolved_secrets = str(latest_or_explicit(self.bundle_dir, secrets_path, "secrets_bundle") or "")
+
+        if not resolved_bundle:
+            fail("State bundle not found. Run `omni capture` or pass --bundle.")
+            return
+        if not resolved_secrets:
+            fail("Secrets bundle not found. Run `omni capture` or pass --secrets.")
+            return
+        if not self.confirm_step("Restore and reconcile this host now?", accept_all=accept_all):
+            warn("Restore cancelled.")
+            return
+
+        report = reconcile_host(
+            manifest,
+            bundle_path=resolved_bundle,
+            secrets_path=resolved_secrets,
+            passphrase=passphrase,
+            target_root=target_root,
+            repos=self.repo_entries,
+        )
+        ok(f"Restore completed using {selected_path}")
+        self.write_json_output(report)
+
+        if install_timer and self.confirm_step("Install daily Omni timer?", accept_all=accept_all):
+            self.install_timer_cmd("omni-update", on_calendar)
+
+    def detect_ip_cmd(self):
+        print_logo(compact=True)
+        section("Host Identity")
+        identity = detect_host_identity()
+        capture_summary = load_capture_summary(self.bundle_dir)
+
+        kv("Public IP", identity.public_ip or "unknown", color=C.GRN if identity.public_ip else C.YLW)
+        kv("Private IP", identity.private_ip or "unknown", color=C.GRN if identity.private_ip else C.YLW)
+        kv("Hostname", identity.hostname or "unknown", color=C.GRN)
+        kv("FQDN", identity.fqdn or "unknown", color=C.GRN)
+        kv("Source", identity.source, color=C.G3)
+        if identity.ip_candidates:
+            kv("Candidates", ", ".join(identity.ip_candidates), color=C.G3)
+        nl()
+
+        if capture_summary and capture_summary.get("source_identity"):
+            source = capture_summary["source_identity"]
+            bullet("Latest capture summary source identity", C.PRIMARY, bold=True)
+            dim(f"public_ip={source.get('public_ip') or 'unknown'}")
+            dim(f"private_ip={source.get('private_ip') or 'unknown'}")
+            dim(f"hostname={source.get('hostname') or 'unknown'}")
+            dim(f"fqdn={source.get('fqdn') or 'unknown'}")
+        else:
+            warn("No capture summary found. Capture a bundle set to persist old host identity.")
+
+    def rewrite_ip_cmd(
+        self,
+        root: str = "",
+        *,
+        target_public_ip: str = "",
+        target_private_ip: str = "",
+        target_hostname: str = "",
+        apply_changes: bool = False,
+        accept_all: bool = False,
+        context_lines: int = 2,
+    ):
+        print_logo(compact=True)
+        section("Rewrite Host References")
+        target_scan_root = Path(root).expanduser() if root else Path.home()
+        identity = detect_host_identity()
+        summary = load_capture_summary(self.bundle_dir)
+        replacements: Dict[str, str] = {}
+
+        source_identity = (summary or {}).get("source_identity") or {}
+        source_public = str(source_identity.get("public_ip") or os.environ.get("OMNI_SOURCE_PUBLIC_IP") or "").strip()
+        source_private = str(source_identity.get("private_ip") or os.environ.get("OMNI_SOURCE_PRIVATE_IP") or "").strip()
+        source_hostname = str(source_identity.get("hostname") or os.environ.get("OMNI_SOURCE_HOSTNAME") or "").strip()
+        source_fqdn = str(source_identity.get("fqdn") or os.environ.get("OMNI_SOURCE_FQDN") or "").strip()
+
+        new_public = target_public_ip or identity.public_ip or ""
+        new_private = target_private_ip or identity.private_ip or ""
+        new_hostname = target_hostname or identity.hostname or ""
+        new_fqdn = target_hostname or identity.fqdn or ""
+
+        if source_public and new_public and source_public != new_public:
+            replacements[source_public] = new_public
+        if source_private and new_private and source_private != new_private:
+            replacements[source_private] = new_private
+        if source_hostname and new_hostname and source_hostname != new_hostname:
+            replacements[source_hostname] = new_hostname
+        if source_fqdn and new_fqdn and source_fqdn != new_fqdn:
+            replacements[source_fqdn] = new_fqdn
+
+        if not replacements:
+            warn("No replacement candidates found. Capture summary may be missing or already aligned with this host.")
+            return
+
+        plan = build_rewrite_plan(target_scan_root, replacements)
+        print(preview_rewrite_plan(plan, context_lines=context_lines))
+        if plan.changed_files == 0:
+            warn("No matching references found in allowlisted files.")
+            return
+
+        if apply_changes or self.confirm_step("Apply these replacements now?", accept_all=accept_all):
+            result = apply_rewrite_plan(plan)
+            ok(f"Updated {len(result.applied)} files")
+        else:
+            warn("Preview only. Re-run with --apply or confirm interactively.")
+
+    def migrate_host_cmd(
+        self,
+        manifest_path: str = "",
+        home_root: str = "",
+        bundle_path: str = "",
+        secrets_path: str = "",
+        target_root: str = "/",
+        passphrase_env: str = "OMNI_SECRET_PASSPHRASE",
+        *,
+        accept_all: bool = False,
+        install_timer: bool = False,
+        on_calendar: str = "daily",
+        apply_rewrite: bool = True,
+    ):
+        print_logo(compact=True)
+        section("Migrate Host")
+        info_obj = detect_platform_info()
+        kv("Detected Platform", f"{info_obj.system} / {info_obj.shell} / {info_obj.package_manager}", color=C.GRN)
+        nl()
+
+        self.restore_host_cmd(
+            manifest_path=manifest_path,
+            home_root=home_root,
+            bundle_path=bundle_path,
+            secrets_path=secrets_path,
+            target_root=target_root,
+            passphrase_env=passphrase_env,
+            accept_all=accept_all,
+            install_timer=install_timer,
+            on_calendar=on_calendar,
+        )
+
+        if apply_rewrite and self.confirm_step("Detect and rewrite old host references to this host?", accept_all=accept_all):
+            self.rewrite_ip_cmd(root=home_root or str(Path.home()), apply_changes=True, accept_all=True)
+
+    def bridge_mode(self, *, accept_all: bool = False, dest: str = "", protocol: str = "rsync"):
+        print_logo(compact=True)
+        section("Bridge Mode")
+        action = "create"
+        if not accept_all:
+            bullet("1. create  - create recovery bundles", C.PRIMARY)
+            bullet("2. send    - send latest bundles to remote destination", C.PRIMARY)
+            bullet("3. receive - restore latest bundles on this host", C.PRIMARY)
+            nl()
+            action = self.prompt_text("Choose bridge action", "create").strip().lower()
+        if action in {"2", "send"}:
+            destination = dest or self.prompt_text("Remote destination (example ubuntu@host:/home/ubuntu/omni-bundles)", "")
+            if not destination:
+                fail("Remote destination required for bridge send.")
+                return
+            result = self.transfer.transfer_directory(str(self.bundle_dir), destination, {"protocol": protocol, "compress": True})
+            if result.get("success"):
+                ok(f"Bridge send complete: {destination}")
+            else:
+                fail(result.get("error", "Bridge send failed"))
+            return
+        if action in {"3", "receive", "restore"}:
+            self.restore_host_cmd(accept_all=accept_all, install_timer=accept_all)
+            return
+        self.capture_host_cmd(accept_all=accept_all)
+
     def show_install_guide(self):
         print_logo(tagline=False)
         render_help_overview()
@@ -1163,9 +1543,9 @@ class OmniCore:
         bullet("2. Run: omni init", C.GRN)
         bullet("3. Edit .env, config/repos.json, config/servers.json and system_manifest.json", C.GRN)
         bullet("4. Run: ./install.sh --compose --sync --timer", C.GRN)
-        bullet("5. Export state: omni bundle-create", C.GRN)
-        bullet("6. Export secrets: omni secrets-export", C.GRN)
-        bullet("7. Rebuild host: omni reconcile --bundle-latest --secrets-latest", C.GRN)
+        bullet("5. Run `omni` to enter the guided start flow", C.GRN)
+        bullet("6. Capture recovery set: omni capture", C.GRN)
+        bullet("7. Rebuild host: omni migrate or omni restore", C.GRN)
         nl()
 
     def show_inventory(self, manifest_path: str = "", home_root: str = "", output: str = ""):
@@ -1550,7 +1930,7 @@ logger = logging.getLogger("omni.core")
 
 def main():
     parser = argparse.ArgumentParser(description="Omni Core - The Supreme Coordinator", add_help=False)
-    parser.add_argument("action", nargs="?", default="help", help="Action to perform")
+    parser.add_argument("action", nargs="?", default="start", help="Action to perform")
     parser.add_argument("--interval", type=int, default=300, help="Interval for watch mode (seconds)")
     parser.add_argument("--lines", type=int, default=50, help="Number of log lines")
     parser.add_argument("--follow", "-f", action="store_true", help="Follow logs")
@@ -1571,7 +1951,14 @@ def main():
     parser.add_argument("--service-name", type=str, default="omni-update", help="Systemd service/timer name")
     parser.add_argument("--on-calendar", type=str, default="daily", help="systemd OnCalendar value")
     parser.add_argument("--yes", action="store_true", help="Confirm destructive operations")
+    parser.add_argument("--accept-all", action="store_true", help="Accept Omni prompts non-interactively")
     parser.add_argument("--include-secrets", action="store_true", help="Include secret paths in purge")
+    parser.add_argument("--target-public-ip", type=str, default="", help="Target public IP for rewrite/migrate")
+    parser.add_argument("--target-private-ip", type=str, default="", help="Target private IP for rewrite/migrate")
+    parser.add_argument("--target-hostname", type=str, default="", help="Target hostname/FQDN for rewrite/migrate")
+    parser.add_argument("--context-lines", type=int, default=2, help="Context lines for rewrite previews")
+    parser.add_argument("--apply", action="store_true", help="Apply changes for rewrite-style commands")
+    parser.add_argument("--dest", type=str, default="", help="Remote destination for bridge send")
 
     args, remaining = parser.parse_known_args()
 
@@ -1589,6 +1976,8 @@ def main():
 
     if action in ["help", "?"] or args.help:
         core.show_help()
+    elif action == "start":
+        core.start_guided(accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
     elif action == "check":
         core.run_health_check()
     elif action == "fix":
@@ -1597,6 +1986,8 @@ def main():
         core.watch_mode(args.interval)
     elif action == "status":
         core.show_status()
+    elif action == "doctor":
+        core.show_doctor()
     elif action == "logs":
         core.show_logs(args.lines, args.follow)
     elif action == "restart":
@@ -1627,6 +2018,67 @@ def main():
         core.init_workspace()
     elif action == "sync":
         core.sync_remote_servers()
+    elif action == "capture":
+        core.capture_host_cmd(args.manifest, args.home_root, args.output, args.passphrase_env, accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
+    elif action == "restore":
+        core.restore_host_cmd(
+            manifest_path=args.manifest,
+            home_root=args.home_root,
+            bundle_path=args.bundle,
+            secrets_path=args.secrets,
+            target_root=args.target_root,
+            passphrase_env=args.passphrase_env,
+            accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ),
+            install_timer=args.yes or args.accept_all,
+            on_calendar=args.on_calendar,
+        )
+    elif action == "migrate":
+        core.migrate_host_cmd(
+            manifest_path=args.manifest,
+            home_root=args.home_root,
+            bundle_path=args.bundle,
+            secrets_path=args.secrets,
+            target_root=args.target_root,
+            passphrase_env=args.passphrase_env,
+            accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ),
+            install_timer=args.yes or args.accept_all,
+            on_calendar=args.on_calendar,
+            apply_rewrite=args.apply or args.yes or args.accept_all,
+        )
+    elif action == "detect-ip":
+        core.detect_ip_cmd()
+    elif action == "rewrite-ip":
+        root = remaining[0] if remaining else args.home_root
+        core.rewrite_ip_cmd(
+            root=root,
+            target_public_ip=args.target_public_ip,
+            target_private_ip=args.target_private_ip,
+            target_hostname=args.target_hostname,
+            apply_changes=args.apply,
+            accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ),
+            context_lines=args.context_lines,
+        )
+    elif action == "bridge":
+        bridge_action = remaining[0] if remaining else ""
+        if bridge_action in {"create", ""}:
+            core.capture_host_cmd(args.manifest, args.home_root, args.output, args.passphrase_env, accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
+        elif bridge_action == "send":
+            core.bridge_mode(accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ), dest=args.dest or (remaining[1] if len(remaining) > 1 else ""), protocol=args.protocol)
+        elif bridge_action in {"receive", "restore"}:
+            core.restore_host_cmd(
+                manifest_path=args.manifest,
+                home_root=args.home_root,
+                bundle_path=args.bundle,
+                secrets_path=args.secrets,
+                target_root=args.target_root,
+                passphrase_env=args.passphrase_env,
+                accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ),
+                install_timer=args.yes or args.accept_all,
+                on_calendar=args.on_calendar,
+            )
+        else:
+            fail(f"Unknown bridge action: {bridge_action}")
+            hint("Use: omni bridge create|send|receive")
     elif action == "inventory":
         core.show_inventory(args.manifest, args.home_root, args.output)
     elif action == "bundle-create":

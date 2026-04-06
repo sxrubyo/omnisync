@@ -2,6 +2,8 @@
 
 Omni Core está orientado a restaurar un entorno productivo limpio en Linux, sincronizar estado real desde otros hosts y dejar mantenimiento automático sin arrastrar ruido innecesario.
 
+Ahora el punto de entrada recomendado ya no es memorizar comandos bajos: es ejecutar `omni` o `omni start` y dejar que la CLI te guíe hacia `bridge`, `capture`, `restore`, `migrate` o `doctor`.
+
 No intenta clonar `/home/ubuntu` tal cual.
 La regla es otra: preservar lo que sí construye producto y separar lo que debe viajar aparte.
 
@@ -67,6 +69,12 @@ Omni Core trabaja bien cuando se conservan estas piezas:
 
 ## Modos de instalación
 
+### 0. Guía simple desde GitHub
+
+Si no quieres complicarte con claves, wrappers ni PowerShell remoto:
+
+- [GUIA_INSTALACION_SIMPLE_GITHUB.md](/home/ubuntu/omni-core/GUIA_INSTALACION_SIMPLE_GITHUB.md)
+
 ### 1. Bootstrap Linux local
 
 Si ya estás en la máquina destino:
@@ -94,6 +102,10 @@ pwsh ./bootstrap.ps1 -TargetHost 1.2.3.4 -User ubuntu -RepoUrl git@github.com:sx
 Ese wrapper se conecta por SSH al host Linux, prepara paquetes base, clona o actualiza Omni Core y dispara el mismo bootstrap de producción.
 Si agregas `-InstallTimer`, también deja programado el reconcile diario con `systemd`.
 
+Guía dedicada:
+
+- [GUIA_POWERSHELL_WINDOWS.md](/home/ubuntu/omni-core/GUIA_POWERSHELL_WINDOWS.md)
+
 ### 3. Carpeta copiada por SCP
 
 ```bash
@@ -113,6 +125,30 @@ chmod +x install.sh bin/omni bootstrap.sh
 ./install.sh --compose --sync
 ```
 
+## Entrada recomendada
+
+La superficie principal ahora es:
+
+```bash
+omni
+omni start
+omni doctor
+omni capture
+omni restore
+omni migrate
+omni detect-ip
+omni rewrite-ip
+omni bridge
+```
+
+La regla práctica es:
+
+- `omni` o `omni start`: entrar al asistente guiado
+- `omni capture`: crear recovery pack completo
+- `omni restore`: restaurar bundle + secrets
+- `omni migrate`: reconstruir host y corregir referencias
+- `omni doctor`: revisar salud, bundles y problemas de configuración
+
 ## Recuperación y reconciliación
 
 El punto de entrada operativo sigue siendo `install.sh` y la CLI `omni`.
@@ -120,6 +156,15 @@ El punto de entrada operativo sigue siendo `install.sh` y la CLI `omni`.
 Comandos útiles:
 
 ```bash
+omni
+omni doctor
+omni capture
+omni restore
+omni migrate
+omni detect-ip
+omni rewrite-ip
+omni bridge create
+omni bridge send --dest ubuntu@host:/ruta
 omni help
 omni status
 omni inventory
@@ -136,7 +181,9 @@ docker compose up -d --build
 docker compose logs -f omni-core
 ```
 
-`omni fix` comprueba espacio, memoria, repos Git y PM2.
+`omni doctor` revisa salud, bundles, manifest y problemas obvios como hosts placeholder.
+`omni capture` produce estado + secretos + resumen verificable.
+`omni migrate` reutiliza restore/reconcile y puede reescribir referencias de host/IP.
 `omni sync` trae snapshots y archivos remotos definidos en `config/servers.json`.
 `omni purge` hace un dry-run de todo lo que puede borrarse para recuperar disco; con `--yes` lo elimina de verdad.
 
@@ -192,24 +239,23 @@ data/servers/<server>/<ruta-remota-normalizada>/
 
 ```bash
 cd /opt/omni-core
-cp .env.example .env
-cp config/repos.example.json config/repos.json
-cp config/servers.example.json config/servers.json
+omni init
 nano .env
 nano config/repos.json
 nano config/servers.json
-./install.sh --compose --sync
+./install.sh --compose --sync --timer
+omni
 ```
 
 ## Flujo recomendado de restauración
 
 1. clonar o copiar `omni-core`
-2. importar secretos cifrados
-3. restaurar `config/`, `data/`, `backups/` y `tasks.json`
-4. ejecutar `./install.sh --compose --sync`
-5. correr `omni fix`
-6. validar `omni status`
-7. dejar activo el timer diario
+2. correr `omni init`
+3. mover `bundle + secrets` al host nuevo
+4. ejecutar `omni restore` o `omni migrate`
+5. validar `omni doctor`
+6. revisar `omni detect-ip`
+7. si hace falta, ejecutar `omni rewrite-ip`
 
 ## Liberar espacio
 

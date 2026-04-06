@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import hashlib
 import shutil
 import subprocess
 import tarfile
@@ -263,3 +264,57 @@ def latest_or_explicit(bundle_dir: Path, explicit_path: str, prefix: str) -> Opt
     if explicit_path:
         return Path(explicit_path).expanduser()
     return latest_bundle(bundle_dir, prefix)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def bundle_metadata(bundle_path: Path) -> Dict[str, Any]:
+    path = Path(bundle_path)
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+
+    metadata: Dict[str, Any] = {
+        "path": str(path),
+        "exists": True,
+        "size_bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "encrypted": path.suffix == ".enc",
+        "archive_kind": "unknown",
+        "manifest_profile": None,
+        "created_at": None,
+    }
+
+    inspect_path = path
+    temp_plain: Optional[tempfile.TemporaryDirectory[str]] = None
+    try:
+        if path.suffix == ".enc":
+            metadata["archive_kind"] = "secrets"
+            return metadata
+
+        with tarfile.open(inspect_path, "r:gz") as archive:
+            try:
+                meta_member = archive.extractfile("_omni/metadata.json")
+                if meta_member is not None:
+                    meta_payload = json.loads(meta_member.read().decode("utf-8"))
+                    metadata["archive_kind"] = meta_payload.get("kind", "unknown")
+                    metadata["created_at"] = meta_payload.get("created_at")
+            except KeyError:
+                pass
+            try:
+                manifest_member = archive.extractfile("_omni/manifest.json")
+                if manifest_member is not None:
+                    manifest_payload = json.loads(manifest_member.read().decode("utf-8"))
+                    metadata["manifest_profile"] = manifest_payload.get("profile")
+            except KeyError:
+                pass
+    finally:
+        if temp_plain is not None:
+            temp_plain.cleanup()
+
+    return metadata
