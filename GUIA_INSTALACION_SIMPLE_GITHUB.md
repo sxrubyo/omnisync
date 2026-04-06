@@ -109,64 +109,37 @@ ubuntu@ip-xxx:~$
 
 Cuando veas eso, ya no estás en Windows: ya estás dentro del Ubuntu.
 
-## Paso 2. Ya dentro de Ubuntu, instala Git y GitHub CLI
+## Paso 2. Ya dentro de Ubuntu, instala Git
 
 Ahora sí, ya dentro del Ubuntu, pega esto:
 
 ```bash
 sudo apt update
-sudo apt install -y git gh
+sudo apt install -y git
 ```
 
-## Paso 3. Ya dentro de Ubuntu, inicia sesión en GitHub
+## Paso 3. Clona Omni Core sin login
 
-Pega esto:
+Si el repo está público, no necesitas iniciar sesión en GitHub. Pega esto:
 
 ```bash
-gh auth login
+bash -c 'cd /home/ubuntu && git clone https://github.com/sxrubyo/omni-core.git "$OMNI_DIR"'
 ```
 
-Cuando te pregunte:
-
-- `Where do you use GitHub?` -> `GitHub.com`
-- `What is your preferred protocol for Git operations?` -> `HTTPS`
-- `Authenticate Git with your GitHub credentials?` -> `Yes`
-- `How would you like to authenticate GitHub CLI?` -> `Login with a web browser`
-
-Como estás dentro de Ubuntu por SSH, normalmente te mostrará:
-
-- un enlace
-- un código
-
-Entonces haces esto:
-
-1. copias el código que te muestre
-2. abres el enlace en tu navegador normal
-3. pegas el código
-4. autorizas
-
-Luego valida:
+Si `"$OMNI_DIR"` ya existe y quieres actualizarlo aunque esté sucio, usa esto en vez de `git pull`:
 
 ```bash
-gh auth status
+bash "$OMNI_DIR/bootstrap.sh" https://github.com/sxrubyo/omni-core.git "$OMNI_DIR" main
 ```
 
-## Paso 4. Clona Omni Core
+## Paso 4. Ejecuta la instalación
 
 Todavía dentro de Ubuntu, pega esto:
 
 ```bash
-gh repo clone sxrubyo/omni-core "$OMNI_DIR"
 cd "$OMNI_DIR"
-```
-
-## Paso 5. Ejecuta la instalación
-
-Todavía dentro de Ubuntu, pega esto:
-
-```bash
 chmod +x install.sh bin/omni bootstrap.sh
-./install.sh --compose --sync --timer
+./install.sh --compose --timer
 ```
 
 Eso hace esto:
@@ -174,7 +147,7 @@ Eso hace esto:
 - prepara archivos base si faltan
 - instala `omni`
 - levanta Docker Compose
-- ejecuta `sync`
+- no fuerza `sync` si todavía no hay SSH remoto listo
 - instala el timer diario
 - si antes corriste `omni init --profile full-home`, el manifest ya quedará listo para capturar el home completo manteniendo secretos aparte
 
@@ -199,7 +172,7 @@ El preflight de `omni capture` ahora te va a mostrar antes de confirmar:
 
 Ahí vas a ver explícitamente si entran `.codex` y `melissa-backups`.
 
-## Paso 6. Verifica que quedó bien
+## Paso 5. Verifica que quedó bien
 
 Todavía dentro de Ubuntu, pega esto:
 
@@ -240,12 +213,7 @@ Luego, ya dentro de Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install -y git gh
-gh auth login
-gh repo clone sxrubyo/omni-core "$OMNI_DIR"
-cd "$OMNI_DIR"
-chmod +x install.sh bin/omni bootstrap.sh
-./install.sh --compose --sync --timer
+bash /home/ubuntu/omni-core/bootstrap.sh https://github.com/sxrubyo/omni-core.git "$OMNI_DIR" main
 omni
 omni agent
 omni chat

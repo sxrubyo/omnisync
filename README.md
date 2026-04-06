@@ -226,13 +226,15 @@ Si no quieres pelear con wrappers:
 ### Linux local
 
 ```bash
-bash bootstrap.sh git@github.com:sxrubyo/omni-core.git /opt/omni-core main
+bash bootstrap.sh https://github.com/sxrubyo/omni-core.git /opt/omni-core main
 ```
 
-### GitHub privado
+Si el clon local ya existe y tiene cambios o archivos sueltos, `bootstrap.sh` los guarda en un `git stash` antes de actualizar.
+
+### GitHub publico o privado
 
 ```bash
-git clone git@github.com:sxrubyo/omni-core.git /opt/omni-core
+git clone https://github.com/sxrubyo/omni-core.git /opt/omni-core
 cd /opt/omni-core
 chmod +x install.sh bin/omni bootstrap.sh
 ./install.sh --compose --sync --timer
