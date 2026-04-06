@@ -71,7 +71,14 @@ def build_examples_catalog() -> List[ExampleEntry]:
             title="Chat operativo con Omni",
             description="Abre la interfaz conversacional de Omni Agent con historial, slash commands y acciones sugeridas.",
             when_to_use="Cuando ya elegiste un provider y quieres hablar normal con Omni para operar el host o pedir comandos.",
-            command="omni chat\nomni chat \"hazme un diagnóstico rápido del host\"",
+            command="omni chat\nomni chat \"puedes iniciar migracion\"\n# dentro del chat:\n/permissions smart",
+        ),
+        ExampleEntry(
+            key="packages",
+            title="Inventario del stack instalado",
+            description="Enumera APT, Python, npm global y PM2 del host actual.",
+            when_to_use="Cuando necesitas saber exactamente qué runtime y herramientas tiene el host antes de migrar o reconstruir.",
+            command="omni packages\nomni packages --output /tmp/host-packages.json",
         ),
         ExampleEntry(
             key="bridge-send",

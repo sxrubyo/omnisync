@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 from chat_ops import (  # noqa: E402
     clean_assistant_output,
     build_chat_request,
+    ensure_chat_permissions,
     extract_chat_text,
     load_chat_session,
     new_chat_session,
@@ -113,6 +114,17 @@ class ChatOpsTests(unittest.TestCase):
             loaded = load_chat_session(Path(session["path"]))
             self.assertEqual(loaded["provider_title"], "OpenAI Direct")
             self.assertEqual(loaded["messages"][0]["content"], "hola")
+
+    def test_new_chat_session_gets_default_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = new_chat_session(
+                Path(tmp),
+                provider_title="Gemini",
+                model="gemini-2.5-flash",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+            )
+            permissions = ensure_chat_permissions(session)
+            self.assertEqual(permissions["mode"], "smart")
 
 
 if __name__ == "__main__":

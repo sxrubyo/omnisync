@@ -96,6 +96,8 @@ DEFAULT_NPM_GLOBAL_PACKAGES = [
     "pm2",
 ]
 
+DEFAULT_PYTHON_PACKAGES: List[str] = []
+
 DEFAULT_PROFILE = "production-clean"
 FULL_HOME_PROFILE = "full-home"
 
@@ -259,6 +261,7 @@ def profile_presets(home_root: str = "/home/ubuntu") -> Dict[str, Dict[str, Any]
         "compose_projects": list(DEFAULT_COMPOSE_PROJECTS),
         "exclude_patterns": list(DEFAULT_EXCLUDE_PATTERNS),
         "apt_packages": list(DEFAULT_APT_PACKAGES),
+        "python_packages": list(DEFAULT_PYTHON_PACKAGES),
         "npm_global_packages": list(DEFAULT_NPM_GLOBAL_PACKAGES),
     }
     return {
@@ -305,6 +308,7 @@ def normalize_manifest(manifest: Dict[str, Any], home_root: str) -> Dict[str, An
         normalized[key] = [expand_path(item, home_root) for item in values]
     normalized["exclude_patterns"] = list(normalized.get("exclude_patterns", []))
     normalized["apt_packages"] = list(normalized.get("apt_packages", []))
+    normalized["python_packages"] = list(normalized.get("python_packages", []))
     normalized["npm_global_packages"] = list(normalized.get("npm_global_packages", []))
     return normalized
 
@@ -330,6 +334,7 @@ def build_default_manifest(
         "compose_projects": [expand_path(path, home_root) for path in DEFAULT_COMPOSE_PROJECTS],
         "exclude_patterns": list(DEFAULT_EXCLUDE_PATTERNS),
         "apt_packages": list(DEFAULT_APT_PACKAGES),
+        "python_packages": list(DEFAULT_PYTHON_PACKAGES),
         "npm_global_packages": list(DEFAULT_NPM_GLOBAL_PACKAGES),
     }
     return manifest

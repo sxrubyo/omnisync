@@ -67,6 +67,48 @@ def install_npm_global_packages(packages: List[str]) -> Dict[str, Any]:
     return {"changed": missing, "skipped": [pkg for pkg in requested if pkg not in missing]}
 
 
+def install_python_packages(packages: List[str]) -> Dict[str, Any]:
+    requested = [pkg for pkg in packages if pkg]
+    if not requested or not command_exists("python3"):
+        return {"changed": [], "skipped": requested}
+
+    current_versions: Dict[str, str] = {}
+    code, out, _ = run_cmd("python3 -m pip list --format=json")
+    if code == 0 and out:
+        try:
+            payload = json.loads(out)
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip().lower()
+                version = str(item.get("version") or "").strip()
+                if name:
+                    current_versions[name] = version
+        except json.JSONDecodeError:
+            current_versions = {}
+
+    missing: List[str] = []
+    for package in requested:
+        normalized = str(package).strip()
+        if not normalized:
+            continue
+        if "==" in normalized:
+            name, expected_version = normalized.split("==", 1)
+            if current_versions.get(name.strip().lower()) != expected_version.strip():
+                missing.append(normalized)
+        else:
+            if normalized.lower() not in current_versions:
+                missing.append(normalized)
+
+    if not missing:
+        return {"changed": [], "skipped": requested}
+
+    code, out, err = run_cmd("python3 -m pip install " + " ".join(shlex.quote(pkg) for pkg in missing))
+    if code != 0:
+        raise RuntimeError(err or out or "python package install failed")
+    return {"changed": missing, "skipped": [pkg for pkg in requested if pkg not in missing]}
+
+
 def clone_or_update_repos(repo_entries: List[Any]) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     for entry in repo_entries:
@@ -291,6 +333,9 @@ def reconcile_host(
 
     apt_res = install_apt_packages(list(manifest.get("apt_packages", [])))
     report["steps"].append({"name": "apt", **apt_res})
+
+    python_res = install_python_packages(list(manifest.get("python_packages", [])))
+    report["steps"].append({"name": "python_packages", **python_res})
 
     npm_res = install_npm_global_packages(list(manifest.get("npm_global_packages", [])))
     report["steps"].append({"name": "npm_global", **npm_res})

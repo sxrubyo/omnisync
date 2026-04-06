@@ -40,6 +40,8 @@ Cuando el host ya tiene `capture summary`, Omni puede trabajar mucho más solo:
 - `omni agent` abre el selector visual de proveedor para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible
 - `omni agent list` imprime el catálogo completo de providers/modelos desde el host remoto
 - `omni chat` abre el chat operativo usando el provider principal configurado en `omni agent`
+- dentro de `omni chat`, `/permissions smart|ask|auto|all` controla cuándo te pide permiso antes de ejecutar
+- `omni packages` enumera APT, Python, npm global y PM2 del host remoto
 - `omni examples` imprime playbooks listos para copiar desde el host
 - `omni auto --p` imprime el one-liner de PowerShell para auto-actualizar el host remoto
 - `omni agent` ya permite pegar API keys y otros valores de forma más robusta en terminales PowerShell/SSH
@@ -194,6 +196,7 @@ Desde tu PowerShell:
 ssh ubuntu@IP_DEL_SERVIDOR "cd /opt/omni-core && omni"
 ssh ubuntu@IP_DEL_SERVIDOR "cd /opt/omni-core && omni agent"
 ssh ubuntu@IP_DEL_SERVIDOR "cd /opt/omni-core && omni chat"
+ssh ubuntu@IP_DEL_SERVIDOR "cd /opt/omni-core && omni packages"
 ssh ubuntu@IP_DEL_SERVIDOR "cd /opt/omni-core && omni doctor"
 ssh ubuntu@IP_DEL_SERVIDOR "cd /opt/omni-core && omni inventory"
 ssh ubuntu@IP_DEL_SERVIDOR "cd /opt/omni-core && docker compose ps"

@@ -422,6 +422,8 @@ Qué hace:
 - guarda historial en `data/agent-chat`
 - soporta slash commands
 - puede sugerir comandos o listas de tareas por una capa de acciones separada
+- puede interceptar intents operativos como migración, capture, rewrite e inventario del stack
+- pide permiso según el perfil activo del chat antes de ejecutar acciones sensibles
 
 Slash commands principales:
 
@@ -433,9 +435,26 @@ Slash commands principales:
 - `/run`
 - `/todo`
 - `/exec on|off`
+- `/permissions`
 - `/quit`
 
 La respuesta visible es conversacional normal. Si Omni necesita sugerir un comando o un plan, lo hace por debajo con acciones estructuradas para que el chat no suene a JSON ni a código.
+
+Perfiles de permisos:
+
+- `smart`: auto solo para acciones seguras; pregunta en installs, rewrite o shell
+- `ask`: pregunta antes de cada acción ejecutable
+- `auto`: auto para casi todo; solo frena acciones peligrosas
+- `all`: auto para todo
+
+Ejemplos:
+
+```bash
+omni chat
+# dentro del chat:
+/permissions smart
+/permissions all
+```
 
 ### Nota sobre Claude 4.6
 
@@ -457,6 +476,7 @@ Incluye:
 - rewrite de IP y hostname
 - configuración de `omni agent`
 - `omni chat`
+- `omni packages`
 - bridge send
 - purge
 
@@ -547,6 +567,7 @@ Qué hace:
 |---|---|---|
 | `omni init` | crea config/runtime faltante | primer paso en host nuevo |
 | `omni inventory` | clasifica estado, secretos y ruido | previo a capture |
+| `omni packages` | enumera el stack instalado del host | APT, Python, npm global y PM2 |
 | `omni bundle-create` | exporta bundle de estado | modo experto |
 | `omni bundle-restore` | restaura bundle de estado | modo experto |
 | `omni secrets-export` | exporta pack cifrado de secretos | requiere passphrase |
@@ -624,6 +645,13 @@ omni migrate --profile full-home --accept-all
 omni inventory --profile full-home
 ```
 
+### Quiero ver el stack instalado real del host
+
+```bash
+omni packages
+omni packages --output /tmp/host-packages.json
+```
+
 ### Quiero arreglar referencias viejas de IP
 
 ```bash
@@ -655,6 +683,8 @@ omni agent list
 ```bash
 omni chat
 omni chat "revisa el host y dime los riesgos"
+# dentro del chat:
+/permissions smart
 ```
 
 ## Inventario de servidores remotos

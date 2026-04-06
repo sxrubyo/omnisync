@@ -26,6 +26,7 @@ class PlaybookOpsTests(unittest.TestCase):
         self.assertIn("full-home-migrate", keys)
         self.assertIn("agent-setup", keys)
         self.assertIn("chat", keys)
+        self.assertIn("packages", keys)
         self.assertIn("bridge-send", keys)
         self.assertGreaterEqual(len(entries), 9)
 

@@ -32,12 +32,21 @@ from chat_ops import (
     chat_completion,
     clean_assistant_output,
     ensure_activation_prompt,
+    ensure_chat_permissions,
     latest_chat_session_path,
     load_chat_session,
     load_env_value,
     new_chat_session,
     parse_action_block,
     save_chat_session,
+)
+from operator_ops import build_operator_response, infer_migration_mode
+from permissions_ops import (
+    build_permission_prompt,
+    ensure_permissions_state,
+    evaluate_permission_decision,
+    parse_permissions_request,
+    render_permissions_lines,
 )
 from bridge_ops import (
     build_host_rewrite_context,
@@ -71,6 +80,13 @@ from playbook_ops import (
     build_windows_ps1_path,
 )
 from reconcile_ops import install_systemd_service, install_systemd_timer, reconcile_host
+from runtime_inventory_ops import (
+    capture_installed_inventory,
+    load_installed_inventory,
+    merge_manifest_runtime_inventory,
+    summarize_installed_inventory,
+    write_installed_inventory,
+)
 from watch_ops import capture_watch_snapshot, load_watch_snapshot, save_watch_snapshot, summarize_snapshot_diff
 
 
@@ -1213,7 +1229,7 @@ class OmniCore:
         return AUTO_BUNDLE_DIR
 
     def prune_bundle_dir(self, bundle_dir: Path, keep: int = AUTO_BACKUP_KEEP) -> None:
-        for pattern in ("state_bundle_*", "secrets_bundle_*", "capture_summary_*.json"):
+        for pattern in ("state_bundle_*", "secrets_bundle_*", "capture_summary_*.json", "installed_inventory_*.json"):
             candidates = sorted(bundle_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
             for stale in candidates[keep:]:
                 try:
@@ -1238,11 +1254,15 @@ class OmniCore:
         passphrase = self.read_passphrase(passphrase_env)
         state_bundle = create_state_bundle(target_dir, manifest)
         secrets_bundle = create_secrets_bundle(target_dir, manifest, passphrase=passphrase)
+        installed_inventory = capture_installed_inventory()
+        installed_inventory_path = write_installed_inventory(target_dir, installed_inventory)
         summary_path = write_capture_summary(
             bundle_dir=target_dir,
             manifest_path=selected_path,
             state_bundle=state_bundle,
             secrets_bundle=secrets_bundle,
+            installed_inventory_path=installed_inventory_path,
+            installed_inventory=installed_inventory,
         )
         if prune:
             self.prune_bundle_dir(target_dir, keep=AUTO_BACKUP_KEEP)
@@ -1252,6 +1272,8 @@ class OmniCore:
             "bundle_dir": str(target_dir),
             "state_bundle": str(state_bundle),
             "secrets_bundle": str(secrets_bundle),
+            "installed_inventory_path": str(installed_inventory_path),
+            "installed_inventory": installed_inventory,
             "summary_path": str(summary_path),
             "encrypted": bool(passphrase),
         }
@@ -1681,6 +1703,13 @@ class OmniCore:
         kv("Secret", "loaded" if env_var and load_env_value(ENV_FILE, env_var) else "missing", color=C.GRN if env_var and load_env_value(ENV_FILE, env_var) else C.YLW)
         kv("Activation", str(AGENT_ACTIVATION_FILE), color=C.GRN)
         kv("Latest Session", latest_session.name if latest_session else "none", color=C.GRN if latest_session else C.YLW)
+        if latest_session:
+            try:
+                session = load_chat_session(latest_session)
+                permissions = ensure_chat_permissions(session)
+                kv("Permissions", permissions.get("mode", "smart"), color=C.GRN)
+            except Exception:
+                kv("Permissions", "unknown", color=C.YLW)
         if AGENT_ACTIVATION_FILE.exists():
             activation_preview = ensure_activation_prompt(AGENT_ACTIVATION_FILE).splitlines()[0]
             dim(f"  activation: {activation_preview}")
@@ -1698,6 +1727,7 @@ class OmniCore:
                 "/run  ejecutar el último comando sugerido por Omni",
                 "/todo  ver la última lista de tareas sugerida",
                 "/exec on|off  activar o desactivar ejecución rápida de comandos",
+                "/permissions  ver o cambiar permisos: smart|ask|auto|all",
                 "/quit  salir del chat",
             ],
             width=min(92, TERM_WIDTH - 4),
@@ -1741,6 +1771,7 @@ class OmniCore:
             try:
                 session = load_chat_session(latest_path)
                 session.setdefault("messages", [])
+                ensure_chat_permissions(session)
                 return session
             except Exception:
                 pass
@@ -1753,12 +1784,56 @@ class OmniCore:
             protocol=runtime["protocol"],
             activation_file=str(AGENT_ACTIVATION_FILE),
         )
+        ensure_chat_permissions(session)
         save_chat_session(Path(session["path"]), session)
         return session
 
     def render_assistant_message(self, text: str, *, title: str = "Omni") -> None:
         lines = [segment.strip() for segment in text.splitlines() if segment.strip()]
         box(title, lines or ["(sin contenido)"], width=min(94, TERM_WIDTH - 4), accent=C.GLD_BRIGHT)
+
+    def build_operator_context(self, profile: str = "") -> Dict[str, Any]:
+        try:
+            _, manifest = self.resolve_manifest("", str(Path.home()), create=True, profile=profile)
+        except Exception:
+            manifest = build_default_manifest(str(Path.home()), profile=profile or DEFAULT_PROFILE)
+        state_paths = list(manifest.get("state_paths", []))
+        has_product_state = any(
+            Path(path).expanduser().exists()
+            for path in state_paths
+            if path and not str(path).endswith("dump.pm2")
+        )
+        return {
+            "profile": str(manifest.get("profile", DEFAULT_PROFILE)),
+            "has_state_bundle": bool(latest_or_explicit(self.bundle_dir, "", "state_bundle")),
+            "has_secrets_bundle": bool(latest_or_explicit(self.bundle_dir, "", "secrets_bundle")),
+            "has_capture_summary": bool(load_capture_summary(self.bundle_dir)),
+            "has_product_state": has_product_state,
+            "migration_mode": infer_migration_mode(
+                {
+                    "has_state_bundle": bool(latest_or_explicit(self.bundle_dir, "", "state_bundle")),
+                    "has_secrets_bundle": bool(latest_or_explicit(self.bundle_dir, "", "secrets_bundle")),
+                    "has_capture_summary": bool(load_capture_summary(self.bundle_dir)),
+                    "has_product_state": has_product_state,
+                }
+            ),
+        }
+
+    def current_chat_permissions(self, session: Dict[str, Any], *, accept_all: bool = False) -> Dict[str, Any]:
+        permissions = ensure_chat_permissions(session)
+        if accept_all:
+            permissions = ensure_permissions_state({"mode": "all"})
+            session["permissions"] = permissions
+        return permissions
+
+    def render_chat_permissions(self, session: Dict[str, Any]) -> None:
+        permissions = self.current_chat_permissions(session)
+        box(
+            "Omni Permissions",
+            render_permissions_lines(permissions),
+            width=min(92, TERM_WIDTH - 4),
+            accent=C.CYN,
+        )
 
     def render_action_hint(self, action: Dict[str, Any]) -> None:
         if action.get("type") == "command":
@@ -1771,14 +1846,52 @@ class OmniCore:
                 accent=C.CYN,
             )
             return
+        if action.get("type") == "workflow":
+            steps = action.get("steps") or []
+            lines = [action.get("title", "Flujo sugerido")]
+            for idx, step in enumerate(steps, start=1):
+                if not isinstance(step, dict):
+                    continue
+                lines.append(f"{idx}. {step.get('command', '')}")
+            lines.append("Usa `/run` para ejecutarlo dentro del chat.")
+            box("Workflow sugerido", lines, width=min(94, TERM_WIDTH - 4), accent=C.CYN)
+            return
         if action.get("type") == "todo":
             items = action.get("items") or []
             lines = [action.get("title", "Tareas sugeridas")] + [f"- {item}" for item in items if item]
             box("Plan sugerido", lines, width=min(94, TERM_WIDTH - 4), accent=C.CYN)
 
-    def run_chat_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        if action.get("type") != "command":
-            raise RuntimeError("La última acción no es un comando ejecutable.")
+    def run_chat_action(self, action: Dict[str, Any], *, permissions: Dict[str, Any] | None = None, prompt_for_permission: bool = True) -> Dict[str, Any]:
+        action_type = str(action.get("type", "command")).strip().lower()
+        permissions_state = ensure_permissions_state(permissions)
+        decision = evaluate_permission_decision(action, permissions_state)
+
+        if prompt_for_permission and decision["needs_confirmation"]:
+            if not self.confirm_step(build_permission_prompt(action, decision), accept_all=False, default=False):
+                raise RuntimeError("Acción cancelada por permisos.")
+
+        if action_type == "workflow":
+            steps = action.get("steps") or []
+            results = []
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                step_action = {
+                    "type": "command",
+                    "command": step.get("command", ""),
+                    "title": step.get("title") or step.get("command") or "Paso",
+                    "confirm": False,
+                }
+                results.append(self.run_chat_action(step_action, permissions={"mode": "all"}, prompt_for_permission=False))
+            return {
+                "type": "workflow",
+                "title": action.get("title", "Workflow"),
+                "results": results,
+            }
+
+        if action_type != "command":
+            raise RuntimeError("La última acción no es ejecutable.")
+
         command = str(action.get("command", "")).strip()
         if not command:
             raise RuntimeError("La última acción no contiene comando.")
@@ -1801,6 +1914,7 @@ class OmniCore:
             lines.extend(stderr.splitlines()[-10:])
         render_action_summary("Resultado del comando", lines, accent=C.GRN if completed.returncode == 0 else C.RED)
         return {
+            "type": "command",
             "command": command,
             "exit_code": completed.returncode,
             "stdout": stdout,
@@ -1808,6 +1922,12 @@ class OmniCore:
         }
 
     def summarize_command_result_for_chat(self, result: Dict[str, Any]) -> str:
+        if result.get("type") == "workflow":
+            parts = [f"Resultado del flujo `{result.get('title', 'workflow')}`:"]
+            for index, item in enumerate(result.get("results", []), start=1):
+                parts.append(f"paso_{index}: `{item.get('command', '')}` exit_code={item.get('exit_code', 'unknown')}")
+            return "\n".join(parts).strip()
+
         def _tail(text: str, label: str) -> List[str]:
             if not text:
                 return []
@@ -1820,6 +1940,17 @@ class OmniCore:
         return "\n".join(parts).strip()
 
     def chat_once(self, runtime: Dict[str, str], session: Dict[str, Any], prompt: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        operator_response = build_operator_response(prompt, context=self.build_operator_context())
+        if operator_response:
+            clean_text = operator_response.get("response", "").strip() or "Listo."
+            action = operator_response.get("action")
+            session_messages = list(session.get("messages", []))
+            session_messages.append({"role": "user", "content": prompt})
+            session_messages.append({"role": "assistant", "content": clean_text})
+            session["messages"] = session_messages
+            save_chat_session(Path(session["path"]), session)
+            return clean_text, action
+
         session_messages = list(session.get("messages", []))
         request_messages = [{"role": "system", "content": runtime["system_prompt"]}] + session_messages + [{"role": "user", "content": prompt}]
         result = chat_completion(
@@ -1883,6 +2014,7 @@ class OmniCore:
         nl()
 
         session = self.open_chat_session(runtime, force_new=normalized in {"new", "fresh"})
+        permissions = self.current_chat_permissions(session, accept_all=accept_all)
         if session.get("messages"):
             info(f"Sesión recuperada: {Path(session['path']).name}")
             dim(f"Mensajes guardados: {len(session['messages'])}")
@@ -1919,8 +2051,23 @@ class OmniCore:
                 if lowered == "status":
                     self.show_chat_status()
                     continue
+                if lowered.startswith("permissions"):
+                    remainder = command.split(" ", 1)[1].strip() if " " in command else ""
+                    parsed = parse_permissions_request(remainder)
+                    if parsed["action"] == "show":
+                        self.render_chat_permissions(session)
+                    elif parsed["action"] == "set":
+                        session["permissions"] = ensure_permissions_state({"mode": parsed["mode"]})
+                        permissions = self.current_chat_permissions(session)
+                        save_chat_session(Path(session["path"]), session)
+                        ok(f"Permisos del chat actualizados a `{permissions['mode']}`.")
+                        self.render_chat_permissions(session)
+                    else:
+                        warn("Modo inválido. Usa: /permissions smart|ask|auto|all")
+                    continue
                 if lowered == "new":
                     session = self.open_chat_session(runtime, force_new=True)
+                    permissions = self.current_chat_permissions(session, accept_all=accept_all)
                     last_action = None
                     info(f"Sesión nueva: {Path(session['path']).name}")
                     continue
@@ -1944,7 +2091,7 @@ class OmniCore:
                         warn("No hay comando sugerido listo para ejecutar.")
                         continue
                     try:
-                        result = self.run_chat_action(last_action)
+                        result = self.run_chat_action(last_action, permissions=permissions, prompt_for_permission=True)
                     except Exception as err:
                         fail(str(err))
                         continue
@@ -1977,9 +2124,17 @@ class OmniCore:
             last_action = action
             if action:
                 self.render_action_hint(action)
-                if exec_enabled and action.get("type") == "command" and not action.get("confirm", True):
+                decision = evaluate_permission_decision(action, permissions)
+                if exec_enabled and action.get("type") in {"command", "workflow"} and decision["auto_execute"] and not decision["needs_confirmation"]:
                     try:
-                        self.run_chat_action(action)
+                        result = self.run_chat_action(action, permissions=permissions, prompt_for_permission=False)
+                        session["messages"].append(
+                            {
+                                "role": "user",
+                                "content": self.summarize_command_result_for_chat(result),
+                            }
+                        )
+                        save_chat_session(Path(session["path"]), session)
                     except Exception as err:
                         fail(str(err))
 
@@ -2199,9 +2354,11 @@ class OmniCore:
         bullet("Configurar Omni Agent  -> omni agent", C.GRN)
         dim("Selector visual para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible.")
         bullet("Hablar con Omni Agent  -> omni chat", C.GRN)
-        dim("Interfaz conversacional con historial, slash commands y acciones sugeridas.")
+        dim("Interfaz conversacional con historial, slash commands, `/permissions` y acciones operativas.")
         bullet("Ver playbooks listos  -> omni examples", C.GRN)
         dim("Comandos listos para captura, migración, bridge, rewrite, agent y chat.")
+        bullet("Inventario del stack  -> omni packages", C.GRN)
+        dim("Enumera APT, Python, npm global y PM2 del host actual.")
         bullet("One-liner PowerShell  -> omni auto --p", C.GRN)
         dim("Imprime el comando de auto-actualización listo para pegar en PowerShell.")
         nl()
@@ -2238,6 +2395,7 @@ class OmniCore:
         dim("    Use `omni init --profile full-home` for a full /home/ubuntu capture")
         bullet("omni sync      - Pull snapshots from configured servers", C.PRIMARY)
         bullet("omni inventory - Classify host state vs. secrets vs. noise", C.PRIMARY)
+        bullet("omni packages  - Capture the installed host stack (APT/Python/npm/PM2)", C.PRIMARY)
         bullet("omni bundle-create - Export state bundle from the active profile", C.PRIMARY)
         bullet("omni bundle-restore - Restore latest or explicit state bundle", C.PRIMARY)
         bullet("omni secrets-export - Export encrypted secrets pack", C.PRIMARY)
@@ -2248,7 +2406,7 @@ class OmniCore:
         bullet("omni agent     - Configure Omni Agent provider and model", C.PRIMARY)
         dim("    Use `omni agent list` to inspect the full provider/model catalog")
         bullet("omni chat      - Open a conversational terminal with Omni Agent", C.PRIMARY)
-        dim("    También soporta `omni chat \"tu mensaje\"` para un turno puntual")
+        dim("    También soporta `omni chat \"tu mensaje\"` y `/permissions smart|ask|auto|all`")
         bullet("omni examples  - Show ready-to-copy operational playbooks", C.PRIMARY)
         bullet("omni auto      - Show automation status or emit PowerShell auto-update command", C.PRIMARY)
         bullet("omni bridge    - Create/send/receive migration packs", C.PRIMARY)
@@ -2631,8 +2789,11 @@ class OmniCore:
         state_bundle = pack["state_bundle"]
         secrets_bundle = pack["secrets_bundle"]
         summary_path = pack["summary_path"]
+        installed_inventory_path = pack["installed_inventory_path"]
+        installed_inventory = pack["installed_inventory"]
         ok(f"State bundle created: {state_bundle}")
         ok(f"Secrets bundle created: {secrets_bundle}")
+        ok(f"Installed inventory written: {installed_inventory_path}")
         ok(f"Capture summary written: {summary_path}")
         if not pack["encrypted"]:
             warn("No passphrase configured. Secrets bundle was exported without encryption.")
@@ -2643,9 +2804,11 @@ class OmniCore:
                 f"Perfil activo: {manifest.get('profile', DEFAULT_PROFILE)}",
                 f"Bundle de estado: {state_bundle}",
                 f"Bundle de secretos: {secrets_bundle}",
+                f"Inventario instalado: {installed_inventory_path}",
                 f"Resumen: {summary_path}",
                 f"Directorio: {bundle_dir}",
             ]
+            summary_lines.extend([""] + summarize_installed_inventory(installed_inventory))
             if not passphrase:
                 summary_lines.append("Atención: el bundle de secretos quedó sin cifrar.")
             summary_lines.extend(
@@ -2684,6 +2847,8 @@ class OmniCore:
         passphrase = self.read_passphrase(passphrase_env)
         resolved_bundle = str(latest_or_explicit(self.bundle_dir, bundle_path, "state_bundle") or "")
         resolved_secrets = str(latest_or_explicit(self.bundle_dir, secrets_path, "secrets_bundle") or "")
+        runtime_inventory = load_installed_inventory(self.bundle_dir)
+        effective_manifest = merge_manifest_runtime_inventory(manifest, runtime_inventory)
 
         if not resolved_bundle:
             fail("State bundle not found. Run `omni capture` or pass --bundle.")
@@ -2696,7 +2861,7 @@ class OmniCore:
             return
 
         report = reconcile_host(
-            manifest,
+            effective_manifest,
             bundle_path=resolved_bundle,
             secrets_path=resolved_secrets,
             passphrase=passphrase,
@@ -2729,6 +2894,7 @@ class OmniCore:
                 f"Perfil activo: {manifest.get('profile', DEFAULT_PROFILE)}",
                 f"Archivos de estado restaurados: {restore_state.get('restored', 0)}",
                 f"Archivos de secretos restaurados: {restore_secrets.get('restored', 0)}",
+                f"Inventario instalado: {'detectado' if runtime_inventory else 'no'}",
                 f"Proyectos Compose levantados: {compose_started}",
                 f"PM2: {pm2_step.get('status', 'sin estado')}",
                 f"Timer diario: {'instalado' if timer_installed else 'pendiente'}",
@@ -3025,6 +3191,49 @@ class OmniCore:
                 "inventory": report,
             }
             self.write_json_output(payload, output)
+
+    def show_packages(self, output: str = ""):
+        print_logo(compact=True)
+        section("Installed Stack")
+        runtime_inventory = capture_installed_inventory()
+
+        kv("APT packages", str(len(runtime_inventory.get("apt_packages", []))), color=C.GRN)
+        kv("Python packages", str(len(runtime_inventory.get("python_packages", []))), color=C.GRN)
+        kv("npm global", str(len(runtime_inventory.get("npm_global_packages", []))), color=C.GRN)
+        kv("PM2 processes", str(len(runtime_inventory.get("pm2_processes", []))), color=C.GRN)
+        nl()
+
+        for line in summarize_installed_inventory(runtime_inventory):
+            bullet(line, C.GRN)
+
+        apt_preview = runtime_inventory.get("apt_packages", [])[:12]
+        python_preview = runtime_inventory.get("python_packages", [])[:12]
+        npm_preview = runtime_inventory.get("npm_global_packages", [])[:12]
+        pm2_preview = runtime_inventory.get("pm2_processes", [])[:8]
+
+        if apt_preview:
+            nl()
+            section("APT Preview")
+            for item in apt_preview:
+                bullet(item, C.PRIMARY)
+        if python_preview:
+            nl()
+            section("Python Preview")
+            for item in python_preview:
+                bullet(item, C.PRIMARY)
+        if npm_preview:
+            nl()
+            section("npm Global Preview")
+            for item in npm_preview:
+                bullet(item, C.PRIMARY)
+        if pm2_preview:
+            nl()
+            section("PM2 Preview")
+            for item in pm2_preview:
+                bullet(f"{item.get('name', 'unknown')} [{item.get('status', 'unknown')}]", C.PRIMARY)
+
+        if output:
+            self.write_json_output(runtime_inventory, output)
 
     def create_state_bundle_cmd(self, manifest_path: str = "", home_root: str = "", output: str = "", profile: str = ""):
         print_logo(compact=True)
@@ -3585,6 +3794,8 @@ def main():
                 hint("Use: omni bridge create|send|receive")
         elif action == "inventory":
             core.show_inventory(args.manifest, args.home_root, args.output, profile=args.profile)
+        elif action == "packages":
+            core.show_packages(args.output)
         elif action == "bundle-create":
             core.create_state_bundle_cmd(args.manifest, args.home_root, args.output, profile=args.profile)
         elif action == "bundle-restore":

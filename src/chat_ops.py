@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from permissions_ops import ensure_permissions_state
+
 
 DEFAULT_ACTIVATION_PROMPT = """Eres Omni Agent, el operador conversacional de Omni Core.
 Tu proveedor principal es el que el usuario eligió en `omni agent`; no lo sustituyas ni lo ocultes.
@@ -77,6 +79,7 @@ def new_chat_session(
         "created_at": utc_now(),
         "updated_at": utc_now(),
         "messages": [],
+        "permissions": ensure_permissions_state(),
     }
     return payload
 
@@ -90,7 +93,15 @@ def save_chat_session(path: Path, payload: Dict[str, Any]) -> None:
 
 
 def load_chat_session(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["permissions"] = ensure_permissions_state(payload.get("permissions"))
+    return payload
+
+
+def ensure_chat_permissions(session: Dict[str, Any]) -> Dict[str, Any]:
+    permissions = ensure_permissions_state(session.get("permissions"))
+    session["permissions"] = permissions
+    return permissions
 
 
 def latest_chat_session_path(session_dir: Path) -> Optional[Path]:

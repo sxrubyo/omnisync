@@ -61,6 +61,8 @@ Y además:
 - `omni agent` abre el selector visual de proveedor para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible
 - `omni agent list` te deja ver todo el catálogo sin entrar al wizard
 - `omni chat` abre la interfaz conversacional normal de Omni usando el provider principal que elegiste
+- dentro de `omni chat`, `/permissions smart|ask|auto|all` controla cuándo te pide permiso antes de ejecutar
+- `omni packages` enumera APT, Python, npm global y PM2 del host
 - `omni examples` imprime playbooks listos para copiar
 - `omni auto --p` imprime el comando PowerShell de auto-actualización listo para pegar
 
@@ -206,6 +208,7 @@ cd "$OMNI_DIR"
 omni
 omni agent
 omni chat
+omni packages
 omni doctor
 omni inventory
 docker compose ps
@@ -246,6 +249,7 @@ chmod +x install.sh bin/omni bootstrap.sh
 omni
 omni agent
 omni chat
+omni packages
 omni doctor
 omni inventory
 ```
