@@ -17,6 +17,7 @@ import shlex
 import shutil
 import platform
 import textwrap
+import ipaddress
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from pathlib import Path
@@ -275,6 +276,66 @@ def resolve_installed_inventory_across_dirs(
         if payload:
             return payload
     return None
+
+
+def _is_ip_literal(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def enrich_rewrite_context_from_servers(
+    context: Dict[str, Any],
+    servers: List[Dict[str, Any]],
+    identity: Any,
+) -> Dict[str, Any]:
+    if context.get("summary_found") or not servers:
+        return context
+
+    current_targets = {
+        str(getattr(identity, "public_ip", "") or "").strip(),
+        str(getattr(identity, "private_ip", "") or "").strip(),
+        str(getattr(identity, "hostname", "") or "").strip(),
+        str(getattr(identity, "fqdn", "") or "").strip(),
+    }
+    candidates: List[str] = []
+    for server in servers:
+        host = str(server.get("host", "")).strip()
+        if not host or host == "1.2.3.4" or host in current_targets:
+            continue
+        if host not in candidates:
+            candidates.append(host)
+
+    if not candidates:
+        return context
+
+    replacements = dict(context.get("replacements") or {})
+    target_ip = str(getattr(identity, "public_ip", "") or getattr(identity, "private_ip", "") or "").strip()
+    target_host = str(getattr(identity, "hostname", "") or getattr(identity, "fqdn", "") or "").strip()
+    chosen_source = candidates[0]
+    for candidate in candidates:
+        if _is_ip_literal(candidate) and target_ip:
+            replacements.setdefault(candidate, target_ip)
+        elif target_host:
+            replacements.setdefault(candidate, target_host)
+
+    source_identity = dict(context.get("source_identity") or {})
+    if _is_ip_literal(chosen_source):
+        source_identity.setdefault("public_ip", chosen_source)
+    else:
+        source_identity.setdefault("hostname", chosen_source)
+
+    enriched = dict(context)
+    enriched["summary_found"] = bool(replacements)
+    enriched["summary"] = enriched.get("summary") or {
+        "source": "servers_json",
+        "source_identity": source_identity,
+    }
+    enriched["source_identity"] = source_identity
+    enriched["replacements"] = replacements
+    return enriched
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLATFORM COMPATIBILITY
@@ -2873,6 +2934,7 @@ class OmniCore:
         target_hostname: str = "",
     ) -> Dict[str, Any]:
         scan_root = Path(root).expanduser() if root else Path.home()
+        current_identity = detect_host_identity()
         context = None
         source_bundle_dir = self.bundle_dir
         for bundle_dir in self.bundle_search_dirs():
@@ -2894,6 +2956,7 @@ class OmniCore:
             target_private_ip=target_private_ip,
             target_hostname=target_hostname,
         )
+        context = enrich_rewrite_context_from_servers(context, self.servers, current_identity)
         plan = build_rewrite_plan(scan_root, context["replacements"]) if context["replacements"] else None
         return {
             "scan_root": str(scan_root),

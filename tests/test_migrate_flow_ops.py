@@ -24,6 +24,36 @@ class MigrateFlowOpsTests(unittest.TestCase):
         backup_mock.assert_not_called()
         render_mock.assert_not_called()
 
+    def test_build_host_drift_report_uses_configured_server_when_summary_missing(self):
+        core = OmniCore()
+        core.servers = [{"name": "main-ubuntu", "host": "172.31.99.10"}]
+
+        fake_identity = mock.Mock(
+            public_ip="54.1.2.3",
+            private_ip="172.31.34.176",
+            hostname="new-host",
+            fqdn="new-host.local",
+            ip_candidates=["172.31.34.176"],
+            source="local",
+        )
+
+        with mock.patch("omni_core.build_host_rewrite_context", return_value={
+            "summary": None,
+            "summary_found": False,
+            "source_identity": {},
+            "target_identity": {
+                "public_ip": fake_identity.public_ip,
+                "private_ip": fake_identity.private_ip,
+                "hostname": fake_identity.hostname,
+                "fqdn": fake_identity.fqdn,
+            },
+            "replacements": {},
+        }), mock.patch("omni_core.detect_host_identity", return_value=fake_identity):
+            drift = core.build_host_drift_report(root="/tmp")
+
+        self.assertTrue(drift["context"]["summary_found"])
+        self.assertEqual(drift["context"]["replacements"]["172.31.99.10"], "54.1.2.3")
+
 
 if __name__ == "__main__":
     unittest.main()
