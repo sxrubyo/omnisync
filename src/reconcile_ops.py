@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import subprocess
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
@@ -105,6 +106,7 @@ def install_npm_global_packages(packages: List[str]) -> Dict[str, Any]:
     requested = [pkg for pkg in packages if pkg]
     if not requested or not command_exists("npm"):
         return {"changed": [], "skipped": requested}
+    ensure_supported_node_runtime()
     missing: List[str] = []
     for package in requested:
         code, _, _ = run_cmd(f"npm list -g {package} --depth=0")
@@ -112,10 +114,55 @@ def install_npm_global_packages(packages: List[str]) -> Dict[str, Any]:
             missing.append(package)
     if not missing:
         return {"changed": [], "skipped": requested}
-    code, out, err = run_cmd("npm install -g " + " ".join(missing))
+    code, out, err = run_cmd(build_npm_global_install_command(missing))
+    if code != 0 and "EACCES" in (err or out) and command_exists("sudo"):
+        code, out, err = run_cmd("sudo npm install -g " + " ".join(missing))
     if code != 0:
         raise RuntimeError(err or out or "npm global install failed")
     return {"changed": missing, "skipped": [pkg for pkg in requested if pkg not in missing]}
+
+
+def detect_node_major_version() -> int:
+    if not command_exists("node"):
+        return 0
+    code, out, _ = run_cmd("node -v")
+    if code != 0:
+        return 0
+    match = re.search(r"v?(\d+)", out.strip())
+    if not match:
+        return 0
+    return int(match.group(1))
+
+
+def ensure_supported_node_runtime(min_major: int = 16, target_major: int = 20) -> Dict[str, Any]:
+    current_major = detect_node_major_version()
+    if current_major >= min_major:
+        return {"changed": False, "current_major": current_major, "target_major": target_major}
+    if not command_exists("apt-get") or not command_exists("curl"):
+        return {"changed": False, "current_major": current_major, "target_major": target_major}
+
+    if command_exists("sudo"):
+        setup_cmd = f"curl -fsSL https://deb.nodesource.com/setup_{target_major}.x | sudo -E bash -"
+        install_cmd = "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs"
+    else:
+        setup_cmd = f"curl -fsSL https://deb.nodesource.com/setup_{target_major}.x | bash -"
+        install_cmd = "DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs"
+    code, out, err = run_cmd(setup_cmd)
+    if code != 0:
+        raise RuntimeError(err or out or "NodeSource setup failed")
+    code, out, err = run_cmd(install_cmd)
+    if code != 0:
+        raise RuntimeError(err or out or "nodejs install failed")
+    return {"changed": True, "current_major": current_major, "target_major": target_major}
+
+
+def build_npm_global_install_command(packages: List[str]) -> str:
+    prefix_code, prefix_out, _ = run_cmd("npm config get prefix")
+    prefix = prefix_out.strip() if prefix_code == 0 else ""
+    package_args = " ".join(packages)
+    if prefix and not os.access(prefix, os.W_OK) and command_exists("sudo"):
+        return "sudo npm install -g " + package_args
+    return "npm install -g " + package_args
 
 
 def install_python_packages(packages: List[str]) -> Dict[str, Any]:

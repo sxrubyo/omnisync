@@ -10,7 +10,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from reconcile_ops import build_compose_up_command, detect_compose_command, install_apt_packages  # noqa: E402
+from reconcile_ops import (  # noqa: E402
+    build_compose_up_command,
+    detect_compose_command,
+    ensure_supported_node_runtime,
+    install_apt_packages,
+    install_npm_global_packages,
+)
 
 
 class ReconcileOpsTests(unittest.TestCase):
@@ -81,6 +87,66 @@ class ReconcileOpsTests(unittest.TestCase):
 
         self.assertEqual(result["changed"], [])
         self.assertEqual(result["unavailable"], ["made-up-package"])
+
+    def test_ensure_supported_node_runtime_upgrades_old_node(self):
+        calls = []
+
+        def fake_run(cmd: str, cwd=None):
+            calls.append(cmd)
+            if cmd == "command -v node":
+                return (0, "/usr/bin/node", "")
+            if cmd == "node -v":
+                return (0, "v12.22.9", "")
+            if cmd == "command -v apt-get":
+                return (0, "/usr/bin/apt-get", "")
+            if cmd == "command -v curl":
+                return (0, "/usr/bin/curl", "")
+            if cmd == "command -v sudo":
+                return (0, "/usr/bin/sudo", "")
+            if cmd == "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -":
+                return (0, "ok", "")
+            if cmd == "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs":
+                return (0, "installed", "")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with mock.patch("reconcile_ops.run_cmd", side_effect=fake_run):
+            result = ensure_supported_node_runtime()
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["target_major"], 20)
+        self.assertIn("curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -", calls)
+
+    def test_install_npm_global_packages_uses_sudo_when_prefix_is_system(self):
+        calls = []
+
+        def fake_run(cmd: str, cwd=None):
+            calls.append(cmd)
+            if cmd == "command -v npm":
+                return (0, "/usr/bin/npm", "")
+            if cmd == "command -v node":
+                return (0, "/usr/bin/node", "")
+            if cmd == "command -v apt-get":
+                return (0, "/usr/bin/apt-get", "")
+            if cmd == "command -v curl":
+                return (0, "/usr/bin/curl", "")
+            if cmd == "node -v":
+                return (0, "v20.11.1", "")
+            if cmd == "npm list -g pm2 --depth=0":
+                return (1, "", "missing")
+            if cmd == "npm config get prefix":
+                return (0, "/usr/local", "")
+            if cmd == "command -v sudo":
+                return (0, "/usr/bin/sudo", "")
+            if cmd == "sudo npm install -g pm2":
+                return (0, "installed", "")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with mock.patch("reconcile_ops.run_cmd", side_effect=fake_run), \
+             mock.patch("reconcile_ops.os.access", return_value=False):
+            result = install_npm_global_packages(["pm2"])
+
+        self.assertEqual(result["changed"], ["pm2"])
+        self.assertIn("sudo npm install -g pm2", calls)
 
 
 if __name__ == "__main__":
