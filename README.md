@@ -354,6 +354,8 @@ omni agent status
 omni agent list
 ```
 
+Los prompts de `omni agent` para API keys, base URL y modelos personalizados están optimizados para pegar texto sin pelear con PowerShell, SSH ni terminales mixtos.
+
 ### Proveedores soportados hoy
 
 - Claude Direct

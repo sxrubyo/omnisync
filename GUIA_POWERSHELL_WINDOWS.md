@@ -40,6 +40,7 @@ Cuando el host ya tiene `capture summary`, Omni puede trabajar mucho más solo:
 - `omni agent list` imprime el catálogo completo de providers/modelos desde el host remoto
 - `omni examples` imprime playbooks listos para copiar desde el host
 - `omni auto --p` imprime el one-liner de PowerShell para auto-actualizar el host remoto
+- `omni agent` ya permite pegar API keys y otros valores de forma más robusta en terminales PowerShell/SSH
 
 Si no quieres entrar en claves, `pem` o SSH remoto desde PowerShell, usa mejor esta guía:
 

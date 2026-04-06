@@ -9,7 +9,6 @@ import sys
 import os
 import json
 import time
-import getpass
 import threading
 import random
 import argparse
@@ -350,6 +349,29 @@ def _is_tty() -> bool:
         return False
 
 
+def _should_buffer_menu_digits(option_count: int) -> bool:
+    return option_count >= 10
+
+
+def _apply_menu_digit_input(buffer: str, key: str, option_count: int) -> tuple[str, Optional[int]]:
+    if not key.isdigit():
+        return buffer, None
+    if not _should_buffer_menu_digits(option_count):
+        numeric = int(key) - 1
+        return "", numeric if 0 <= numeric < option_count else None
+    max_digits = max(2, len(str(option_count)))
+    next_buffer = (buffer + key)[:max_digits]
+    return next_buffer, None
+
+
+def _resolve_buffered_menu_selection(buffer: str, current: int, option_count: int) -> int:
+    if buffer.isdigit():
+        numeric = int(buffer) - 1
+        if 0 <= numeric < option_count:
+            return numeric
+    return current
+
+
 def select_menu(
     options: List[str],
     *,
@@ -367,6 +389,7 @@ def select_menu(
     descriptions = descriptions or []
     icons = icons or []
     default = max(0, min(default, len(options) - 1))
+    digit_buffer = ""
 
     def fallback() -> int:
         if title:
@@ -437,7 +460,14 @@ def select_menu(
             out.append("       " + q(C.G3, "↓ hay más abajo") + "\n")
 
         out.append("\n")
-        out.append("  " + q(C.G3, footer or "↑/↓ seleccionar · j/k mover · Enter confirmar · número salto directo") + "\n")
+        if digit_buffer:
+            out.append("  " + q(C.PRIMARY, f"número: {digit_buffer}") + "\n")
+        dynamic_footer = footer or (
+            "↑/↓ seleccionar · j/k mover · Enter confirmar · número + Enter"
+            if _should_buffer_menu_digits(len(options))
+            else "↑/↓ seleccionar · j/k mover · Enter confirmar · número salto directo"
+        )
+        out.append("  " + q(C.G3, dynamic_footer) + "\n")
         sys.stdout.write("".join(out))
         sys.stdout.flush()
 
@@ -448,16 +478,18 @@ def select_menu(
         while True:
             ch = msvcrt.getch()
             if ch in (b"\r", b"\n"):
-                return current
+                return _resolve_buffered_menu_selection(digit_buffer, current, len(options))
             if ch == b"\x03":
                 raise KeyboardInterrupt
             if ch in (b"\x00", b"\xe0"):
                 ch2 = msvcrt.getch()
                 if ch2 == b"H" and current > 0:
                     current -= 1
+                    digit_buffer = ""
                     draw()
                 elif ch2 == b"P" and current < len(options) - 1:
                     current += 1
+                    digit_buffer = ""
                     draw()
                 continue
             try:
@@ -466,14 +498,20 @@ def select_menu(
                 continue
             if key in ("k", "K") and current > 0:
                 current -= 1
+                digit_buffer = ""
                 draw()
             elif key in ("j", "J") and current < len(options) - 1:
                 current += 1
+                digit_buffer = ""
+                draw()
+            elif key in ("\b", "\x08"):
+                digit_buffer = digit_buffer[:-1]
                 draw()
             elif key.isdigit():
-                numeric = int(key) - 1
-                if 0 <= numeric < len(options):
-                    return numeric
+                digit_buffer, selection = _apply_menu_digit_input(digit_buffer, key, len(options))
+                if selection is not None:
+                    return selection
+                draw()
     else:
         import os as _os
         import select as _sel
@@ -516,21 +554,55 @@ def select_menu(
         while True:
             key = read_key()
             if key == "\r":
-                return current
+                return _resolve_buffered_menu_selection(digit_buffer, current, len(options))
             if key == "\x03":
                 raise KeyboardInterrupt
             if key in ("UP", "k", "K") and current > 0:
                 current -= 1
+                digit_buffer = ""
                 draw()
             elif key in ("DOWN", "j", "J") and current < len(options) - 1:
                 current += 1
+                digit_buffer = ""
+                draw()
+            elif key in ("\x7f", "\b"):
+                digit_buffer = digit_buffer[:-1]
                 draw()
             elif key.isdigit():
-                numeric = int(key) - 1
-                if 0 <= numeric < len(options):
-                    return numeric
+                digit_buffer, selection = _apply_menu_digit_input(digit_buffer, key, len(options))
+                if selection is not None:
+                    return selection
+                draw()
 
     return current
+
+
+def prompt_paste_friendly_value(prompt: str, default: str = "", *, uppercase: bool = False) -> str:
+    suffix = f" [{default}]" if default else ""
+    print()
+    try:
+        answer = input(f"{prompt}{suffix}: ").strip()
+    except EOFError:
+        print()
+        return default
+    except KeyboardInterrupt:
+        print()
+        raise
+    value = answer or default
+    return value.upper() if uppercase else value
+
+
+def prompt_paste_friendly_secret(prompt: str) -> str:
+    print()
+    dim("Pega normal. Esta entrada se muestra para maximizar compatibilidad con PowerShell, SSH y terminales mixtos.")
+    try:
+        return input(f"{prompt}: ").strip()
+    except EOFError:
+        print()
+        return ""
+    except KeyboardInterrupt:
+        print()
+        raise
 
 
 def render_action_summary(title: str, lines: List[str], *, accent: Optional[str] = None, width: int = 88):
@@ -1706,11 +1778,11 @@ class OmniCore:
         env_var = provider.env_var
 
         if provider.requires_custom_base_url and self.is_interactive():
-            raw_base = input(f"Base URL [{provider.base_url}]: ").strip()
+            raw_base = prompt_paste_friendly_value("Base URL", provider.base_url)
             if raw_base:
                 base_url = raw_base
         if provider.requires_custom_env_var and self.is_interactive():
-            raw_env = input(f"Variable para API key [{provider.env_var}]: ").strip().upper()
+            raw_env = prompt_paste_friendly_value("Variable para API key", provider.env_var, uppercase=True)
             if raw_env:
                 env_var = raw_env
 
@@ -1733,14 +1805,14 @@ class OmniCore:
             footer="↑/↓ elegir modelo · Enter confirmar · número salto directo",
         )
         if model_choices[model_idx] == "Custom":
-            custom_model = input(f"Modelo personalizado [{provider.default_model}]: ").strip()
+            custom_model = prompt_paste_friendly_value("Modelo personalizado", provider.default_model)
             model = custom_model or provider.default_model
         else:
             model = model_choices[model_idx]
 
         wrote_secret = False
         if self.is_interactive():
-            raw_key = getpass.getpass(f"API key para {provider.title} (Enter para omitir): ").strip()
+            raw_key = prompt_paste_friendly_secret(f"API key para {provider.title} (Enter para omitir)")
             if raw_key:
                 upsert_env_value(ENV_FILE, env_var, raw_key)
                 os.environ[env_var] = raw_key
