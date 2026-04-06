@@ -103,6 +103,12 @@ class ReconcileOpsTests(unittest.TestCase):
                 return (0, "/usr/bin/curl", "")
             if cmd == "command -v sudo":
                 return (0, "/usr/bin/sudo", "")
+            if cmd == "dpkg -s libnode-dev":
+                return (1, "", "not installed")
+            if cmd == "dpkg -s nodejs-doc":
+                return (1, "", "not installed")
+            if cmd == "dpkg -s npm":
+                return (1, "", "not installed")
             if cmd == "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -":
                 return (0, "ok", "")
             if cmd == "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs":
@@ -115,6 +121,41 @@ class ReconcileOpsTests(unittest.TestCase):
         self.assertTrue(result["changed"])
         self.assertEqual(result["target_major"], 20)
         self.assertIn("curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -", calls)
+
+    def test_ensure_supported_node_runtime_removes_legacy_conflicts_before_install(self):
+        calls = []
+
+        def fake_run(cmd: str, cwd=None):
+            calls.append(cmd)
+            if cmd == "command -v node":
+                return (0, "/usr/bin/node", "")
+            if cmd == "node -v":
+                return (0, "v12.22.9", "")
+            if cmd == "command -v apt-get":
+                return (0, "/usr/bin/apt-get", "")
+            if cmd == "command -v curl":
+                return (0, "/usr/bin/curl", "")
+            if cmd == "command -v sudo":
+                return (0, "/usr/bin/sudo", "")
+            if cmd == "dpkg -s libnode-dev":
+                return (0, "installed", "")
+            if cmd == "dpkg -s nodejs-doc":
+                return (1, "", "not installed")
+            if cmd == "dpkg -s npm":
+                return (0, "installed", "")
+            if cmd == "sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y libnode-dev npm":
+                return (0, "removed", "")
+            if cmd == "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -":
+                return (0, "ok", "")
+            if cmd == "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs":
+                return (0, "installed", "")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with mock.patch("reconcile_ops.run_cmd", side_effect=fake_run):
+            result = ensure_supported_node_runtime()
+
+        self.assertTrue(result["changed"])
+        self.assertIn("sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y libnode-dev npm", calls)
 
     def test_install_npm_global_packages_uses_sudo_when_prefix_is_system(self):
         calls = []
@@ -147,6 +188,31 @@ class ReconcileOpsTests(unittest.TestCase):
 
         self.assertEqual(result["changed"], ["pm2"])
         self.assertIn("sudo npm install -g pm2", calls)
+
+    def test_install_npm_global_packages_ensures_node_runtime_before_global_install(self):
+        calls = []
+
+        def fake_run(cmd: str, cwd=None):
+            calls.append(cmd)
+            if cmd == "command -v npm":
+                return (0, "/usr/bin/npm", "")
+            if cmd == "npm list -g pm2 --depth=0":
+                return (1, "", "missing")
+            if cmd == "npm config get prefix":
+                return (0, "/usr/local", "")
+            if cmd == "command -v sudo":
+                return (0, "/usr/bin/sudo", "")
+            if cmd == "sudo npm install -g pm2":
+                return (0, "installed", "")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with mock.patch("reconcile_ops.run_cmd", side_effect=fake_run), \
+             mock.patch("reconcile_ops.ensure_supported_node_runtime") as ensure_mock, \
+             mock.patch("reconcile_ops.os.access", return_value=False):
+            result = install_npm_global_packages(["pm2"])
+
+        self.assertEqual(result["changed"], ["pm2"])
+        ensure_mock.assert_called_once()
 
 
 if __name__ == "__main__":

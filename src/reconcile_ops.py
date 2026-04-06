@@ -17,6 +17,12 @@ APT_PACKAGE_ALIASES = {
     "docker-compose-plugin": ["docker-compose-plugin", "docker-compose"],
 }
 
+LEGACY_NODE_CONFLICT_PACKAGES = [
+    "libnode-dev",
+    "nodejs-doc",
+    "npm",
+]
+
 
 def run_cmd(cmd: str, cwd: str | None = None) -> Tuple[int, str, str]:
     process = subprocess.Popen(
@@ -109,6 +115,23 @@ def resolve_apt_package_name(name: str) -> str:
     return ""
 
 
+def remove_apt_packages(packages: List[str]) -> Dict[str, Any]:
+    requested = [pkg for pkg in packages if pkg]
+    if not requested or not command_exists("apt-get"):
+        return {"changed": [], "skipped": requested}
+    installed = [pkg for pkg in requested if apt_package_installed(pkg)]
+    skipped = [pkg for pkg in requested if pkg not in installed]
+    if not installed:
+        return {"changed": [], "skipped": skipped}
+    code, out, err = run_visible_cmd(
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y " + " ".join(installed),
+        label="Removiendo paquetes APT conflictivos: " + ", ".join(installed),
+    )
+    if code != 0:
+        raise RuntimeError(err or out or "apt remove failed")
+    return {"changed": installed, "skipped": skipped}
+
+
 def install_apt_packages(packages: List[str]) -> Dict[str, Any]:
     requested = [pkg for pkg in packages if pkg]
     if not requested or not command_exists("apt-get"):
@@ -142,9 +165,11 @@ def install_apt_packages(packages: List[str]) -> Dict[str, Any]:
 
 def install_npm_global_packages(packages: List[str]) -> Dict[str, Any]:
     requested = [pkg for pkg in packages if pkg]
-    if not requested or not command_exists("npm"):
+    if not requested:
         return {"changed": [], "skipped": requested}
     ensure_supported_node_runtime()
+    if not command_exists("npm"):
+        return {"changed": [], "skipped": requested}
     missing: List[str] = []
     for package in requested:
         code, _, _ = run_cmd(f"npm list -g {package} --depth=0")
@@ -184,6 +209,8 @@ def ensure_supported_node_runtime(min_major: int = 16, target_major: int = 20) -
         return {"changed": False, "current_major": current_major, "target_major": target_major}
     if not command_exists("apt-get") or not command_exists("curl"):
         return {"changed": False, "current_major": current_major, "target_major": target_major}
+
+    remove_apt_packages(LEGACY_NODE_CONFLICT_PACKAGES)
 
     if command_exists("sudo"):
         setup_cmd = f"curl -fsSL https://deb.nodesource.com/setup_{target_major}.x | sudo -E bash -"
