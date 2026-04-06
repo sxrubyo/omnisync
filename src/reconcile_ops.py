@@ -11,6 +11,10 @@ from typing import Any, Callable, Dict, List, Tuple
 from bundle_ops import restore_bundle
 from host_inventory import expand_path
 
+APT_PACKAGE_ALIASES = {
+    "docker-compose-plugin": ["docker-compose-plugin", "docker-compose"],
+}
+
 
 def run_cmd(cmd: str, cwd: str | None = None) -> Tuple[int, str, str]:
     process = subprocess.Popen(
@@ -45,24 +49,56 @@ def build_compose_up_command(compose_file: Path) -> str:
     return f"{compose_bin} -f {shlex.quote(str(compose_file))} up -d --build"
 
 
+def apt_package_installed(name: str) -> bool:
+    code, _, _ = run_cmd(f"dpkg -s {name}")
+    return code == 0
+
+
+def apt_package_available(name: str) -> bool:
+    code, _, _ = run_cmd(f"apt-cache show {name}")
+    return code == 0
+
+
+def resolve_apt_package_name(name: str) -> str:
+    normalized = str(name or "").strip()
+    if not normalized:
+        return ""
+    if apt_package_installed(normalized) or apt_package_available(normalized):
+        return normalized
+    for alias in APT_PACKAGE_ALIASES.get(normalized, []):
+        if apt_package_installed(alias) or apt_package_available(alias):
+            return alias
+    return ""
+
+
 def install_apt_packages(packages: List[str]) -> Dict[str, Any]:
     requested = [pkg for pkg in packages if pkg]
     if not requested or not command_exists("apt-get"):
-        return {"changed": [], "skipped": requested}
+        return {"changed": [], "skipped": requested, "unavailable": [], "resolved": {}}
     missing: List[str] = []
+    skipped: List[str] = []
+    unavailable: List[str] = []
+    resolved: Dict[str, str] = {}
     for package in requested:
-        code, _, _ = run_cmd(f"dpkg -s {package}")
-        if code != 0:
-            missing.append(package)
+        resolved_name = resolve_apt_package_name(package)
+        if not resolved_name:
+            unavailable.append(package)
+            continue
+        resolved[package] = resolved_name
+        if apt_package_installed(resolved_name):
+            skipped.append(package)
+            continue
+        if resolved_name not in missing:
+            missing.append(resolved_name)
     if not missing:
-        return {"changed": [], "skipped": requested}
+        return {"changed": [], "skipped": skipped, "unavailable": unavailable, "resolved": resolved}
     run_cmd("sudo apt-get update")
     code, out, err = run_cmd(
         "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y " + " ".join(missing)
     )
     if code != 0:
         raise RuntimeError(err or out or "apt install failed")
-    return {"changed": missing, "skipped": [pkg for pkg in requested if pkg not in missing]}
+    return {"changed": missing, "skipped": skipped, "unavailable": unavailable, "resolved": resolved}
 
 
 def install_npm_global_packages(packages: List[str]) -> Dict[str, Any]:
