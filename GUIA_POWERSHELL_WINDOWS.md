@@ -73,7 +73,23 @@ Si esto falla, no sigas con `bootstrap.ps1`.
 
 ## Paso 3. Ejecutar el bootstrap remoto
 
-Ejemplo mínimo:
+Ejemplo mínimo.
+Si no pasas `-Destination`, el script ahora:
+
+- escanea el host remoto
+- recomienda ubicaciones típicas
+- te deja elegir una opción
+- o escribir una ruta personalizada
+
+```powershell
+pwsh .\bootstrap.ps1 `
+  -TargetHost IP_DEL_SERVIDOR `
+  -User ubuntu `
+  -RepoUrl git@github.com:sxrubyo/omni-core.git `
+  -Branch main
+```
+
+Ejemplo fijando destino manualmente:
 
 ```powershell
 pwsh .\bootstrap.ps1 `
@@ -102,6 +118,7 @@ pwsh .\bootstrap.ps1 `
 Qué hace ese comando:
 
 - entra por SSH al servidor Linux
+- si no fijaste `-Destination`, escanea y recomienda rutas como `/opt/omni-core`, `/home/ubuntu/omni-core` o `/srv/omni-core`
 - instala paquetes base si faltan
 - clona o actualiza `omni-core`
 - puedes activar `omni init --profile full-home` antes de capturar si quieres migrar todo `/home/ubuntu`
