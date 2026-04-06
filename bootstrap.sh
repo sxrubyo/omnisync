@@ -34,7 +34,11 @@ safe_update_repo() {
 
 if command -v apt-get >/dev/null 2>&1; then
   sudo apt-get update
-  sudo apt-get install -y git rsync openssh-client ca-certificates curl docker.io docker-compose-plugin
+  sudo apt-get install -y git rsync openssh-client ca-certificates curl docker.io
+  if ! sudo apt-get install -y docker-compose-plugin; then
+    echo "docker-compose-plugin no disponible. Intentando fallback a docker-compose..."
+    sudo apt-get install -y docker-compose || true
+  fi
 fi
 
 if [ -d "$DEST_DIR/.git" ]; then
