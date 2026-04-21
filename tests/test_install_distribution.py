@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -13,6 +14,17 @@ INSTALL_SCRIPT = REPO_ROOT / "install.sh"
 
 
 class InstallDistributionTests(unittest.TestCase):
+    def test_repo_does_not_track_snapshot_payloads(self) -> None:
+        result = subprocess.run(
+            ["git", "ls-files", "home_snapshot", "home_private_snapshot"],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "")
+
     def test_install_script_supports_local_repo_override_and_creates_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -198,6 +210,60 @@ class InstallDistributionTests(unittest.TestCase):
             self.assertEqual(second_result.returncode, 0, msg=second_result.stderr or second_result.stdout)
             combined_output = (second_result.stdout or "") + (second_result.stderr or "")
             self.assertNotIn("cannot delete non-empty directory", combined_output)
+
+    def test_install_script_supports_source_archive_without_snapshot_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            archive_root = base / "archive-root" / "omnisync-main"
+            archive_root.mkdir(parents=True, exist_ok=True)
+            tracked_files = subprocess.check_output(
+                ["git", "ls-files", "-z"],
+                cwd=REPO_ROOT,
+            ).split(b"\0")
+            for raw_path in tracked_files:
+                if not raw_path:
+                    continue
+                relative_path = Path(raw_path.decode("utf-8"))
+                source = REPO_ROOT / relative_path
+                target = archive_root / relative_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            archive_path = base / "omnisync-main.tgz"
+            subprocess.run(
+                ["tar", "-czf", str(archive_path), "-C", str(base / "archive-root"), "omnisync-main"],
+                cwd=REPO_ROOT,
+                check=True,
+            )
+
+            home = base / "home"
+            local_bin = home / ".local" / "bin"
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = f"{local_bin}:{env['PATH']}"
+            env["OMNI_INSTALL_SOURCE_ARCHIVE"] = archive_path.as_uri()
+
+            result = subprocess.run(
+                ["bash", str(INSTALL_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertFalse((home / ".omni" / "home_snapshot").exists())
+            self.assertFalse((home / ".omni" / "home_private_snapshot").exists())
+
+            guide_result = subprocess.run(
+                [str(local_bin / "omni"), "guide"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(guide_result.returncode, 0, msg=guide_result.stderr or guide_result.stdout)
+            self.assertIn("SSH Connect", guide_result.stdout)
 
 
 if __name__ == "__main__":

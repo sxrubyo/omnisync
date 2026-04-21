@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="webhookTitle">
-  <title id="webhookTitle">Webhook</title>
-  <rect x="8" y="8" width="48" height="48" rx="14" fill="#F6F1E6"/>
-  <path d="M22 24a7 7 0 0 1 12.1-4.8l1.7 1.8-2.9 2.7-1.7-1.8A3 3 0 1 0 29 27h7a7 7 0 1 1 0 14h-2v-4h2a3 3 0 1 0 0-6h-7a7 7 0 0 1-7-7z" fill="#111111"/>
-  <path d="M34 23h8v8h-4v-3.2l-9.6 9.6-2.8-2.8 9.6-9.6H34V23z" fill="#111111"/>
-</svg>

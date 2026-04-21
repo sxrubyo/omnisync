@@ -11,7 +11,7 @@ config/servers.json
 config/system_manifest.json
 config/omni_agent.json
 config/omni_agent_activation.txt
-logs/omni.log
+logs/
 backups/
 data/servers/
 data/
@@ -23,6 +23,8 @@ tests/__pycache__/
 *.tar.gz
 *.tar.gz.enc
 docs/superpowers/plans/
+home_snapshot/
+home_private_snapshot/
 home_snapshot/**/node_modules/
 home_snapshot/**/.cache/
 home_snapshot/**/.npm/

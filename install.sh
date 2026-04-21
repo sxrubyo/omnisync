@@ -104,7 +104,12 @@ stage_repo_from_archive() {
   mkdir -p "$extract_dir" "$OMNI_HOME"
   curl -fsSL "$ARCHIVE_URL" -o "$archive"
   ok "Archive downloaded"
-  tar -xzf "$archive" -C "$extract_dir"
+  tar \
+    --exclude='*/home_snapshot' \
+    --exclude='*/home_snapshot/*' \
+    --exclude='*/home_private_snapshot' \
+    --exclude='*/home_private_snapshot/*' \
+    -xzf "$archive" -C "$extract_dir"
   local staged_root
   staged_root="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   [ -n "$staged_root" ] || fail "Could not locate extracted repository root"

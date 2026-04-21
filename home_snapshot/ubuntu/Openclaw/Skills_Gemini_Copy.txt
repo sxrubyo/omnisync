@@ -1,4 +1,0 @@
-Placeholder note: Do not copy external skills. Plan for internal wrappers that use Gemini as a source of prompts/logic but not as code sources.
-- Use internal adapters to map gemini outputs into Melissa prompts.
-- Maintain an index of skills and their permitted sources.
-- Keep an audit trail for all skill invocations and results.
