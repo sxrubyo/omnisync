@@ -111,7 +111,7 @@ def build_flow_options(platform_info: PlatformInfo | None = None) -> list[FlowOp
         FlowOption("doctor", "Doctor", "Inspecciona salud, disco, timers y oportunidades de limpieza.", recommended == "doctor"),
         FlowOption("agent", "Agent", "Configura Omni Agent con Claude, Gemini, OpenRouter, Qwen o un endpoint propio.", recommended == "agent"),
         FlowOption("chat", "Chat", "Abre la superficie conversacional del operador y sus prompts base.", recommended == "chat"),
-        FlowOption("advanced", "Advanced", "Usa comandos de Omni de bajo nivel directamente.", recommended == "advanced"),
+        FlowOption("advanced", "Avanzado", "Usa comandos de Omni de bajo nivel directamente.", recommended == "advanced"),
     ]
 
 

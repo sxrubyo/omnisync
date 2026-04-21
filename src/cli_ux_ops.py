@@ -31,6 +31,17 @@ OMNI_ASCII = r"""
 \____/_/  /_/   |_| \_|___|
 """
 
+OMNI_COMMAND_SHIP = [
+    "           .       *",
+    "        .-\"\"\"-._.-\"\"\"-.",
+    "     .-'___./___\\.___`-.",
+    "     \\_  _/  /_\\  \\_  _/",
+    "       `-.\\__/ \\__/.-'",
+    "          /_   _\\",
+    "        .'/_| |_\\'.",
+    "      *      .      ",
+]
+
 HELP_STARBURST = [
     "              ·",
     "        ╲     │     ╱",
@@ -152,7 +163,7 @@ def render_command_header(
 ) -> None:
     if Console is None or Panel is None or Table is None:
         mode = "DRY RUN" if dry_run else "LIVE"
-        print(OMNI_ASCII)
+        print("\n".join(build_command_ship_lines()))
         print(f"{title} · {mode}")
         if subtitle:
             print(subtitle)
@@ -161,32 +172,58 @@ def render_command_header(
     active_console = console or Console()
     host = snapshot or collect_host_snapshot()
 
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="bold cyan")
-    table.add_column(style="white")
-    table.add_row("Host", f"{host['system']} {host['release']}")
-    table.add_row("Shell", str(host["shell"]))
-    table.add_row("Pkg", str(host["package_manager"]))
-    table.add_row("CPU", f"{host['cpu_cores']} cores")
-    table.add_row("RAM", _format_memory(host))
-    table.add_row("Disk", f"{host['disk_free_gb']} GB free / {host['disk_total_gb']} GB")
+    snapshot = Table.grid(padding=(0, 1))
+    snapshot.add_column(style="bold color(220)", justify="right", no_wrap=True)
+    snapshot.add_column(style="white", no_wrap=True)
+    snapshot.add_row("Host", f"{host['system']} {host['release']}")
+    snapshot.add_row("Shell", str(host["shell"]))
+    snapshot.add_row("Pkg", str(host["package_manager"]))
+    snapshot.add_row("CPU", f"{host['cpu_cores']} cores")
+    snapshot.add_row("RAM", _format_memory(host))
+    snapshot.add_row("Disk", f"{host['disk_free_gb']} GB free / {host['disk_total_gb']} GB")
 
-    body = Table.grid(expand=True)
-    body.add_column(ratio=2)
-    body.add_column(ratio=3)
-    heading = Text(title, style="bold white")
+    body = Table.grid(padding=(0, 2))
+    body.add_column(no_wrap=True)
+    body.add_column(no_wrap=True)
+    heading = Text(title, style="bold color(230)")
     if dry_run:
         heading.append("  DRY RUN", style="bold yellow")
-    subtitle_text = Text(subtitle or "Portable migration control plane", style="bright_black")
-    body.add_row(Text(OMNI_ASCII, style="bold bright_blue"), table)
+    subtitle_text = Text(subtitle or "Portable migration control plane", style="color(246)")
+    body.add_row(_build_command_ship_text(), snapshot)
     panel = Panel.fit(
         body,
         title=heading,
         subtitle=subtitle_text,
-        border_style="bright_blue",
-        padding=(1, 2),
+        border_style="color(220)",
+        padding=(0, 1),
     )
     active_console.print(panel)
+
+
+def build_command_ship_lines() -> list[str]:
+    return list(OMNI_COMMAND_SHIP)
+
+
+def _build_command_ship_text():
+    if Text is None:
+        return "\n".join(build_command_ship_lines())
+
+    palette = [
+        "color(244)",
+        "color(220)",
+        "bold color(222)",
+        "bold color(230)",
+        "color(222)",
+        "color(220)",
+        "color(214)",
+        "color(244)",
+    ]
+    art = Text()
+    for index, line in enumerate(build_command_ship_lines()):
+        art.append(line, style=palette[min(index, len(palette) - 1)])
+        if index < len(OMNI_COMMAND_SHIP) - 1:
+            art.append("\n")
+    return art
 
 
 def _fit_cell(text: str, width: int) -> str:

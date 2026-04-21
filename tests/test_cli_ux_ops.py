@@ -8,7 +8,12 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from cli_ux_ops import build_guided_start_surface_lines, build_help_surface_lines, collect_host_snapshot  # noqa: E402
+from cli_ux_ops import (  # noqa: E402
+    build_command_ship_lines,
+    build_guided_start_surface_lines,
+    build_help_surface_lines,
+    collect_host_snapshot,
+)
 
 
 class CliUxOpsTests(unittest.TestCase):
@@ -98,6 +103,13 @@ class CliUxOpsTests(unittest.TestCase):
         guided_line = next(line for line in lines if "╭ OMNI START SURFACE" in line)
         box_start = guided_line.index("╭ OMNI START SURFACE")
         self.assertLessEqual(len(guided_line[box_start:]), 70)
+
+    def test_build_command_ship_lines_stays_compact_and_space_themed(self):
+        lines = build_command_ship_lines()
+        self.assertGreaterEqual(len(lines), 6)
+        self.assertTrue(any('"""' in line for line in lines))
+        self.assertTrue(any("/_\\" in line for line in lines))
+        self.assertLessEqual(max(len(line) for line in lines), 28)
 
 
 if __name__ == "__main__":

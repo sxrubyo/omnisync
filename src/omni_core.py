@@ -2700,7 +2700,7 @@ class OmniCore:
         print_logo(tagline=False)
         render_command_header(
             "Omni Guide",
-            "Arrow-key launchpad for SSH connect, maleta, restore and agent flows",
+            "Launchpad con flechas para conectar, empaquetar, restaurar y delegar.",
             dry_run=self.is_dry_run(),
             snapshot=self.host_snapshot,
         )
@@ -2754,7 +2754,7 @@ class OmniCore:
         print_logo(compact=True)
         render_command_header(
             "SSH Connect",
-            "Probe the destination host and move the migration payload over SSH",
+            "Sonda el host remoto y mueve la maleta segura por SSH.",
             dry_run=self.is_dry_run(),
             snapshot=self.host_snapshot,
         )
@@ -3466,7 +3466,7 @@ class OmniCore:
         print_logo(tagline=False)
         render_command_header(
             "Install OmniSync",
-            "One-line install and operator-ready first boot",
+            "Instalación de una línea y primer arranque listo para operar.",
             dry_run=self.is_dry_run(),
             snapshot=self.host_snapshot,
         )
