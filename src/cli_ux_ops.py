@@ -29,6 +29,17 @@ OMNI_ASCII = r"""
 \____/_/  /_/   |_| \_|___|
 """
 
+HELP_STARBURST = [
+    "              ·",
+    "        ╲     │     ╱",
+    "          ╲   │   ╱",
+    "·  ────────── ✦ ──────────  ·",
+    "          ╱   │   ╲",
+    "        ╱     │     ╲",
+    "              ·",
+    "",
+]
+
 
 def _memory_snapshot() -> tuple[int, int]:
     system = platform.system().lower()
@@ -172,6 +183,97 @@ def render_command_header(
     active_console.print(panel)
 
 
+def _fit_cell(text: str, width: int) -> str:
+    value = str(text or "")
+    if len(value) <= width:
+        return value.ljust(width)
+    if width <= 1:
+        return value[:width]
+    return value[: width - 1] + "…"
+
+
+def _build_surface_box_lines(title: str, rows: list[str], width: int = 76) -> list[str]:
+    inner = max(24, width - 2)
+    label = f" {title} "
+    top = "╭" + label + "─" * max(0, inner - len(label)) + "╮"
+    body = [f"│{_fit_cell(row, inner)}│" for row in rows]
+    bottom = "╰" + "─" * inner + "╯"
+    return [top] + body + [bottom]
+
+
+def build_help_surface_lines(
+    snapshot: Dict[str, Any],
+    tips: list[str],
+    *,
+    version: str = "",
+    codename: str = "",
+    tagline: str = "Automation at scale.",
+    edition: str = "Omni Core · Enterprise Edition",
+) -> list[str]:
+    host = str(snapshot.get("system", "unknown"))
+    release = str(snapshot.get("release", "unknown"))
+    shell = str(snapshot.get("shell", "unknown"))
+    package_manager = str(snapshot.get("package_manager", "unknown"))
+    cpu_cores = int(snapshot.get("cpu_cores", 0) or 0)
+    memory = _format_memory(snapshot)
+    disk = f"{snapshot.get('disk_free_gb', '0')} GB free / {snapshot.get('disk_total_gb', '0')} GB"
+    version_line = f"         ·  v{version} {codename}  ·".rstrip() if version or codename else "         ·  Omni  ·"
+
+    left_lines = HELP_STARBURST + [
+        "         O  M  N  I",
+        version_line,
+        "",
+        f"  {tagline}",
+        f"  ✦ {edition}",
+        "  ──────────────────────────────────────────────────────────────",
+    ]
+
+    box_rows = [
+        f"Host: {host} {release}",
+        f"Shell: {shell}",
+        f"Pkg: {package_manager}",
+        f"CPU: {cpu_cores} cores",
+        f"RAM: {memory}",
+        f"Disk: {disk}",
+        "",
+    ] + list(tips)
+    right_lines = _build_surface_box_lines("OMNI CONTROL SURFACE", box_rows, width=78)
+
+    left_width = max(len(line) for line in left_lines)
+    right_offset = len(HELP_STARBURST)
+    total_lines = max(len(left_lines), right_offset + len(right_lines))
+    rendered: list[str] = []
+    for idx in range(total_lines):
+        left = left_lines[idx] if idx < len(left_lines) else ""
+        right_idx = idx - right_offset
+        right = right_lines[right_idx] if 0 <= right_idx < len(right_lines) else ""
+        if right:
+            rendered.append(left.ljust(left_width + 4) + right)
+        else:
+            rendered.append(left)
+    return rendered
+
+
+def render_help_surface(
+    snapshot: Dict[str, Any],
+    tips: list[str],
+    *,
+    version: str = "",
+    codename: str = "",
+    tagline: str = "Automation at scale.",
+    edition: str = "Omni Core · Enterprise Edition",
+) -> None:
+    for line in build_help_surface_lines(
+        snapshot,
+        tips,
+        version=version,
+        codename=codename,
+        tagline=tagline,
+        edition=edition,
+    ):
+        print(f"  {line}".rstrip())
+
+
 def render_human_error(
     message: str,
     *,
@@ -187,4 +289,3 @@ def render_human_error(
     active_console = console or Console()
     detail = f"{message}\n\n[bold cyan]Sugerencia:[/bold cyan] {suggestion}" if suggestion else message
     active_console.print(Panel(detail, title="Omni Error", border_style="red", padding=(1, 2)))
-

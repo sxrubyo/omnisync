@@ -18,18 +18,20 @@ class AgentSkillOpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             skill_root = Path(tmp) / "skills"
 
-            with mock.patch("agent_skill_ops.shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}" if cmd in {"claude", "codex"} else None), \
+            with mock.patch("agent_skill_ops.shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}" if cmd in {"claude", "codex", "opencode"} else None), \
                  mock.patch("agent_skill_ops._read_version", side_effect=lambda command: f"{command} 1.0.0"):
                 statuses = ensure_agent_skill_bridges(skill_root)
 
-            self.assertEqual(len(statuses), 3)
+            self.assertEqual(len(statuses), 4)
             self.assertTrue((skill_root / "claude-code" / "SKILL.md").exists())
             self.assertTrue((skill_root / "codex-cli" / "SKILL.md").exists())
             self.assertTrue((skill_root / "gemini-cli" / "SKILL.md").exists())
+            self.assertTrue((skill_root / "opencode-cli" / "SKILL.md").exists())
             metadata = (skill_root / "agent-skills.json").read_text(encoding="utf-8")
             self.assertIn("claude-code", metadata)
             self.assertIn("codex-cli", metadata)
             self.assertIn("gemini-cli", metadata)
+            self.assertIn("opencode-cli", metadata)
 
 
 if __name__ == "__main__":

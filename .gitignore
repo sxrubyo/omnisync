@@ -1,5 +1,10 @@
 .env
-.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/omni-sync/
+!.claude/skills/omni-sync/SKILL.md
+.claude/handoffs/
 .codex
 config/repos.json
 config/servers.json

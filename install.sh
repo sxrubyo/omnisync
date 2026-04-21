@@ -8,6 +8,8 @@ OMNI_HOME="${OMNI_INSTALL_HOME:-$HOME/.omni}"
 RUNTIME_DIR="${OMNI_RUNTIME_DIR:-$OMNI_HOME/runtime}"
 BIN_DIR="${OMNI_BIN_DIR:-$HOME/.local/bin}"
 WRAPPER_PATH="${OMNI_WRAPPER_PATH:-$BIN_DIR/omni}"
+PREEXISTING_OMNI="${OMNI_PREEXISTING_OMNI:-$(command -v omni || true)}"
+REPAIRED_OMNI_PATH=""
 SKIP_DEP_BOOTSTRAP="${OMNI_INSTALL_SKIP_DEPENDENCY_BOOTSTRAP:-0}"
 TMP_DIR="$(mktemp -d)"
 
@@ -103,8 +105,13 @@ bootstrap_runtime() {
 }
 
 write_wrapper() {
-  mkdir -p "$BIN_DIR"
-  cat >"$WRAPPER_PATH" <<EOF
+  write_wrapper_to "$WRAPPER_PATH"
+}
+
+write_wrapper_to() {
+  local target="$1"
+  mkdir -p "$(dirname "$target")"
+  cat >"$target" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 unset OMNI_CONFIG_DIR OMNI_STATE_DIR OMNI_BACKUP_DIR OMNI_BUNDLE_DIR OMNI_AUTO_BUNDLE_DIR
@@ -113,7 +120,39 @@ unset OMNI_REPOS_FILE OMNI_SERVERS_FILE OMNI_MANIFEST_FILE
 export OMNI_HOME="${OMNI_HOME}"
 exec "${RUNTIME_DIR}/bin/python" "${OMNI_HOME}/src/omni_core.py" "\$@"
 EOF
-  chmod +x "$WRAPPER_PATH"
+  chmod +x "$target"
+}
+
+repair_shadow_wrapper() {
+  local target="$1"
+  [ -n "$target" ] || return 0
+  [ "$target" = "$WRAPPER_PATH" ] && return 0
+
+  if [ -L "$target" ]; then
+    local resolved
+    resolved="$(readlink -f "$target" 2>/dev/null || true)"
+    if [ -n "$resolved" ] && [ -w "$resolved" ]; then
+      write_wrapper_to "$resolved"
+      REPAIRED_OMNI_PATH="$resolved"
+      return 0
+    fi
+  fi
+
+  if [ -e "$target" ]; then
+    if [ -w "$target" ]; then
+      write_wrapper_to "$target"
+      REPAIRED_OMNI_PATH="$target"
+      return 0
+    fi
+    return 1
+  fi
+
+  if [ -w "$(dirname "$target")" ]; then
+    write_wrapper_to "$target"
+    REPAIRED_OMNI_PATH="$target"
+    return 0
+  fi
+  return 1
 }
 
 persist_path() {
@@ -128,6 +167,8 @@ persist_path() {
 validate_install() {
   "$WRAPPER_PATH" init >/dev/null 2>&1 || true
   "$WRAPPER_PATH" help >/dev/null 2>&1 || fail "Wrapper validation failed"
+  "$WRAPPER_PATH" commands >/dev/null 2>&1 || fail "Help alias validation failed"
+  PATH="$BIN_DIR:$PATH" bash -lc 'hash -r; omni guide >/dev/null 2>&1' || fail "Installed omni guide validation failed"
 }
 
 say "Preparing Omni installation"
@@ -151,8 +192,14 @@ ok "Runtime ready at $RUNTIME_DIR"
 
 say "Creating CLI wrapper"
 write_wrapper
+if [ -n "$PREEXISTING_OMNI" ]; then
+  repair_shadow_wrapper "$PREEXISTING_OMNI" || ok "Detected shadowed omni at $PREEXISTING_OMNI but could not rewrite it directly"
+fi
 persist_path
 ok "CLI wrapper created at $WRAPPER_PATH"
+if [ -n "$REPAIRED_OMNI_PATH" ]; then
+  ok "Repaired preexisting omni runtime at $REPAIRED_OMNI_PATH"
+fi
 
 say "Validating Omni CLI"
 validate_install

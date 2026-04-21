@@ -48,7 +48,7 @@ from chat_ops import (
     parse_action_block,
     save_chat_session,
 )
-from cli_ux_ops import collect_host_snapshot, render_command_header, render_human_error
+from cli_ux_ops import collect_host_snapshot, render_command_header, render_help_surface, render_human_error
 from cleanup_ops import build_purge_plan, execute_purge
 from connect_ops import SSHDestination, probe_remote_host, transfer_payload
 from full_inventory_ops import collect_full_inventory
@@ -285,6 +285,7 @@ ALIASES = {
     "rp": "restore-plan",
     "g": "guide",
     "ch": "chat",
+    "commands": "help",
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -471,6 +472,11 @@ def select_menu(
 
     current = default
     scroll_offset = 0
+    digit_buffer = ""
+
+    def footer_text() -> str:
+        base = footer or "↑/↓ seleccionar · j/k mover · Enter confirmar · número salto directo"
+        return f"{base} · salto: {digit_buffer}" if digit_buffer else base
 
     def draw(first: bool = False) -> None:
         nonlocal scroll_offset
@@ -507,7 +513,7 @@ def select_menu(
             out.append("       " + q(C.G3, "↓ hay más abajo") + "\n")
 
         out.append("\n")
-        out.append("  " + q(C.G3, footer or "↑/↓ seleccionar · j/k mover · Enter confirmar · número salto directo") + "\n")
+        out.append("  " + q(C.G3, footer_text()) + "\n")
         sys.stdout.write("".join(out))
         sys.stdout.flush()
 
@@ -518,15 +524,19 @@ def select_menu(
         while True:
             ch = msvcrt.getch()
             if ch in (b"\r", b"\n"):
+                if digit_buffer:
+                    return max(0, min(int(digit_buffer) - 1, len(options) - 1))
                 return current
             if ch == b"\x03":
                 raise KeyboardInterrupt
             if ch in (b"\x00", b"\xe0"):
                 ch2 = msvcrt.getch()
                 if ch2 == b"H" and current > 0:
+                    digit_buffer = ""
                     current -= 1
                     draw()
                 elif ch2 == b"P" and current < len(options) - 1:
+                    digit_buffer = ""
                     current += 1
                     draw()
                 continue
@@ -535,15 +545,24 @@ def select_menu(
             except Exception:
                 continue
             if key in ("k", "K") and current > 0:
+                digit_buffer = ""
                 current -= 1
                 draw()
             elif key in ("j", "J") and current < len(options) - 1:
+                digit_buffer = ""
                 current += 1
                 draw()
             elif key.isdigit():
-                numeric = int(key) - 1
-                if 0 <= numeric < len(options):
-                    return numeric
+                digit_buffer, selected, should_return = apply_digit_jump(digit_buffer, key, len(options))
+                if selected is not None:
+                    current = selected
+                    draw()
+                if should_return:
+                    return current
+            elif key in ("\b", "\x7f"):
+                if digit_buffer:
+                    digit_buffer = digit_buffer[:-1]
+                    draw()
     else:
         import os as _os
         import select as _sel
@@ -586,21 +605,54 @@ def select_menu(
         while True:
             key = read_key()
             if key == "\r":
+                if digit_buffer:
+                    return max(0, min(int(digit_buffer) - 1, len(options) - 1))
                 return current
             if key == "\x03":
                 raise KeyboardInterrupt
             if key in ("UP", "k", "K") and current > 0:
+                digit_buffer = ""
                 current -= 1
                 draw()
             elif key in ("DOWN", "j", "J") and current < len(options) - 1:
+                digit_buffer = ""
                 current += 1
                 draw()
             elif key.isdigit():
-                numeric = int(key) - 1
-                if 0 <= numeric < len(options):
-                    return numeric
+                digit_buffer, selected, should_return = apply_digit_jump(digit_buffer, key, len(options))
+                if selected is not None:
+                    current = selected
+                    draw()
+                if should_return:
+                    return current
+            elif key in ("\b", "\x7f"):
+                if digit_buffer:
+                    digit_buffer = digit_buffer[:-1]
+                    draw()
 
     return current
+
+
+def apply_digit_jump(buffer: str, key: str, option_count: int) -> tuple[str, Optional[int], bool]:
+    if not key.isdigit():
+        return buffer, None, False
+
+    candidates = [str(index) for index in range(1, option_count + 1)]
+    merged = f"{buffer}{key}".lstrip("0")
+    if not merged:
+        return "", None, False
+
+    if merged in candidates:
+        selected = int(merged) - 1
+        ambiguous = any(candidate.startswith(merged) and candidate != merged for candidate in candidates)
+        return (merged if ambiguous else "", selected, not ambiguous)
+
+    if key in candidates:
+        selected = int(key) - 1
+        ambiguous = any(candidate.startswith(key) and candidate != key for candidate in candidates)
+        return (key if ambiguous else "", selected, not ambiguous)
+
+    return buffer, None, False
 
 
 def render_action_summary(title: str, lines: List[str], *, accent: Optional[str] = None, width: int = 88):
@@ -1848,7 +1900,7 @@ class OmniCore:
                 [item.title for item in providers],
                 title="¿Qué proveedor quieres usar para Omni Agent?",
                 descriptions=[item.description for item in providers],
-                icons=["🧠", "✨", "🔁", "🌐", "🈶", "🛠️"],
+                icons=[item.icon for item in providers],
                 default=default_idx,
                 show_index=True,
                 footer="↑/↓ elegir proveedor · Enter confirmar · número salto directo",
@@ -2296,14 +2348,20 @@ class OmniCore:
 
     def show_help(self):
         """Show help menu."""
-        print_logo(tagline=True)
-        render_command_header(
-            "Omni Control Surface",
-            "Portable migration CLI with guided SSH, maleta and restore flows",
-            dry_run=self.is_dry_run(),
-            snapshot=self.host_snapshot,
+        print()
+        render_help_surface(
+            self.host_snapshot,
+            [
+                "Quickstart: cp .env.example .env  |  edit config/repos.json  |  docker compose up -d",
+                "Portable state stays clean: config/, data/, backups/, logs/, tasks.json and host bundles",
+                "To migrate: inventory -> bundle-create -> secrets-export -> reconcile -> timer-install",
+                "Keep secrets out of git: .env, tokens and SSH material go in the encrypted secrets pack",
+            ],
+            version=OMNI_VERSION,
+            codename=OMNI_CODENAME,
+            tagline=random.choice(_TAGLINES),
         )
-        render_help_overview()
+        print()
         section("Common Flows")
         bullet("Mover todo /home/ubuntu  -> omni start -> Migrate", C.GRN)
         dim("Omni restaura bundles, secretos, dependencias, compose y PM2.")
@@ -2333,6 +2391,7 @@ class OmniCore:
         bullet("omni restore   - Restore from latest bundle + secrets", C.GRN)
         bullet("omni migrate   - Rebuild this host end to end", C.GRN)
         bullet("omni guide     - Open the interactive Omni launchpad", C.GRN)
+        bullet("omni commands  - Show this command center explicitly", C.GRN)
         bullet("omni connect   - Probe a remote Linux host and send the migration payload", C.GRN)
         bullet("omni briefcase - Build the portable migration contract", C.GRN)
         bullet("omni restore-plan - Derive the target-side restore sequence", C.GRN)
@@ -2382,7 +2441,7 @@ class OmniCore:
         print("  " + q(C.W, "ALIASES", bold=True))
         nl()
         dim("  s=status  f=fix  w=watch  c=check  r=restart  l=logs")
-        dim("  t=transfer  b=backup  m=monitor  cfg=config")
+        dim("  t=transfer  b=backup  m=monitor  cfg=config  commands=help")
         nl()
 
         print("  " + q(C.W, "OPTIONS", bold=True))
@@ -4028,7 +4087,8 @@ def main():
         os.environ["OMNI_DRY_RUN"] = "1"
 
     # Resolve alias
-    action = ALIASES.get(args.action, args.action)
+    normalized_action = str(args.action or "start").strip()
+    action = ALIASES.get(normalized_action.lower(), normalized_action.lower())
 
     core = OmniCore()
 

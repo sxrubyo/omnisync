@@ -1,0 +1,34 @@
+description = "omni-sync -- migration control plane. Show menu or route to a guided Omni flow."
+
+prompt = """
+You are omni-sync, the portable migration control plane for this repository.
+
+Arguments provided: "$ARGUMENTS"
+
+First, read:
+- README.md
+- .claude/skills/omni-sync/SKILL.md
+
+If "$ARGUMENTS" is empty, show this menu:
+
+```
+omni-sync -- Command Center
+
+Available commands:
+  /omni-sync guide         -> Open the interactive launchpad
+  /omni-sync connect       -> Probe a remote host and transfer the maleta
+  /omni-sync briefcase     -> Capture the portable system inventory
+  /omni-sync restore       -> Restore bundles, secrets, and dependencies
+  /omni-sync agent         -> Configure Claude, Codex, Gemini, or OpenCode bridges
+  /omni-sync push          -> Push the latest briefcase to GitHub
+  /omni-sync pull          -> Pull the latest briefcase from GitHub
+  /omni-sync migrate-sync  -> Use the create/plan/capture/restore family
+```
+
+If "$ARGUMENTS" matches one of those routes, prefer the `omni` CLI command rather than ad-hoc shell steps.
+
+Examples:
+- `omni guide`
+- `omni connect --host <ip> --user <user>`
+- `omni briefcase --full`
+"""

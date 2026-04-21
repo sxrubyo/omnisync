@@ -14,6 +14,7 @@ Luego:
 
 ```bash
 omni
+omni commands
 omni guide
 omni briefcase --full --output ~/omni-briefcase.json
 ```
@@ -31,7 +32,7 @@ Omni ya expone estas rutas operativas:
 - `omni restore-plan`
   - deriva el plan de restauración según la plataforma destino
 - `omni agent`
-  - configura proveedor/modelo y deja bridges para Claude Code, Codex CLI y Gemini CLI
+  - configura proveedor/modelo y deja bridges para Claude Code, Codex CLI, Gemini CLI y OpenCode CLI
 - `omni chat`
   - habla con el agente, ejecuta comandos `omni` seguros y resume el siguiente paso
 - `omni auth github`
@@ -40,6 +41,16 @@ Omni ya expone estas rutas operativas:
   - sube el briefcase JSON y el restore script a un repo privado
 - `omni pull`
   - descarga la última maleta desde GitHub en una máquina nueva
+
+El repo también ya trae estructura de comandos/skills para agentes, inspirada en `career-ops`:
+
+- `.claude/skills/omni-sync/SKILL.md`
+- `.gemini/commands/omni-sync.toml`
+- `.gemini/commands/omni-agent.toml`
+- `.opencode/commands/omni-sync.md`
+- `.opencode/commands/omni-agent.md`
+
+Y el instalador ahora repara wrappers viejos de `omni` cuando detecta que un binario anterior está sombreando al nuevo en `PATH`.
 
 ## Qué incluye `omni briefcase --full`
 

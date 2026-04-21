@@ -51,6 +51,12 @@ RUNTIMES = (
         commands=("gemini", "gemini-cli"),
         install_hint="Instala Gemini CLI o expón `gemini`/`gemini-cli` en PATH.",
     ),
+    AgentRuntime(
+        key="opencode-cli",
+        title="OpenCode CLI",
+        commands=("opencode",),
+        install_hint="Instala OpenCode CLI o deja el binario `opencode` disponible en PATH.",
+    ),
 )
 
 
@@ -120,6 +126,7 @@ def ensure_agent_skill_bridges(skill_root: Path) -> List[AgentRuntimeStatus]:
                     "- `omni briefcase --full --output ~/briefcase.json`",
                     "- `omni connect --host <destino> --user <usuario>`",
                     "- `omni chat \"explica el siguiente paso\"`",
+                    f"- `{' '.join([status.command, '.']) if status.installed else status.command}`",
                     "",
                     f"Nota: {status.install_hint}",
                     "",
