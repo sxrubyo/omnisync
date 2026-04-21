@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.claude/handoffs/
+config/repos.json
+config/servers.json
+config/system_manifest.json
+config/omni_agent.json
+config/omni_agent_activation.txt

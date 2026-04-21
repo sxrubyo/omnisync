@@ -33,8 +33,11 @@ class ChatSurfaceOpsTests(unittest.TestCase):
         self.assertEqual(normalize_flow_choice("7"), "chat")
         options = build_flow_options(self._linux_info())
         keys = [item.key for item in options]
+        self.assertIn("connect", keys)
+        self.assertIn("briefcase", keys)
         self.assertIn("chat", keys)
         menu = build_start_menu(self._linux_info())
+        self.assertTrue(any(option["key"] == "connect" for option in menu["options"]))
         self.assertTrue(any(option["key"] == "chat" for option in menu["options"]))
 
     def test_examples_catalog_mentions_chat(self):

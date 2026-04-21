@@ -1,10 +1,12 @@
-# OmniSync v2.1 - The Supreme Coordinator
+# OmniSync
 
-OmniSync está orientado a restaurar un entorno productivo limpio en Linux o un `full-home` completo de `/home/ubuntu`, sincronizar estado real desde otros hosts y dejar mantenimiento automático sin arrastrar ruido innecesario.
+Portable migration CLI for moving a workstation or server without rebuilding it by hand.
+
+Built by Black Boss.
 
 ## Instalación rápida
 
-Instalación pública recomendada:
+Nuevo host o primera instalación:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash
@@ -16,15 +18,30 @@ Luego:
 omni
 omni commands
 omni guide
-omni briefcase --full --output ~/omni-briefcase.json
+omni connect --host <ip|fqdn> --user <user>
 ```
+
+Ruta recomendada:
+
+- `omni`
+  - arranca el flujo guiado y detecta el host actual
+- `omni guide`
+  - launchpad interactivo para SSH Connect, Maleta, Restore, Agent y Migrate Sync
+- `omni briefcase --full`
+  - genera la maleta portable y el restore script
+- `omni connect`
+  - enlaza dos máquinas por SSH y envía el payload
+- `omni restore`
+  - restaura el destino desde bundle + secrets
+- `omni agent`
+  - configura Claude, GPT, Gemini, Mistral, Ollama o un endpoint compatible
 
 ## Superficie principal
 
 Omni ya expone estas rutas operativas:
 
 - `omni guide`
-  - launchpad interactivo con flechas para SSH Connect, Briefcase, Restore, AI Agent y Migrate Sync
+  - launchpad interactivo con flechas para SSH Connect, Maleta, Restore, AI Agent y Migrate Sync
 - `omni connect`
   - conecta dos máquinas por SSH, detecta si el host remoto es limpio o existente y envía briefcase + restore script
 - `omni briefcase --full`

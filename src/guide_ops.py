@@ -28,7 +28,7 @@ def build_guide_entries() -> List[GuideEntry]:
         ),
         GuideEntry(
             key="briefcase",
-            title="Briefcase",
+            title="Maleta",
             description="Empaqueta el inventario portátil del sistema y genera el plan de restauración.",
             estimated_time="1-3 min",
             command="omni briefcase --full",
@@ -62,4 +62,3 @@ def build_guide_payload() -> Dict[str, Any]:
         "title": "Omni Guide",
         "entries": [entry.to_dict() for entry in build_guide_entries()],
     }
-

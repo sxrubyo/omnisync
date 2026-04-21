@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-OmniSync v2.0 - The Supreme Coordinator
-Enterprise-grade system orchestration with premium UI.
-2026 Edition.
+OmniSync v2.1
+Portable migration control plane.
+Built by Black Boss.
 """
 
 import sys
@@ -48,7 +48,13 @@ from chat_ops import (
     parse_action_block,
     save_chat_session,
 )
-from cli_ux_ops import collect_host_snapshot, render_command_header, render_help_surface, render_human_error
+from cli_ux_ops import (
+    collect_host_snapshot,
+    render_command_header,
+    render_guided_start_surface,
+    render_help_surface,
+    render_human_error,
+)
 from cleanup_ops import build_purge_plan, execute_purge
 from connect_ops import SSHDestination, probe_remote_host, transfer_payload
 from full_inventory_ops import collect_full_inventory
@@ -264,14 +270,14 @@ OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
 _TAGLINES = [
-    "The Supreme Coordinator.",
-    "Your system, orchestrated.",
+    "Portable migration, without drama.",
+    "Your system, portable.",
     "Automation at scale.",
-    "The layer between chaos and order.",
-    "System health, guaranteed.",
+    "Move a machine without rebuilding it by hand.",
+    "System state, packed cleanly.",
     "Every process, accounted for.",
-    "Governance at machine speed.",
-    "Sleep well. Your system is supervised.",
+    "Restore the host you actually had.",
+    "Keep the operator in control.",
 ]
 
 ALIASES = {
@@ -662,10 +668,10 @@ def render_action_summary(title: str, lines: List[str], *, accent: Optional[str]
 
 def render_help_overview():
     tips = [
-        "Quickstart: cp .env.example .env  |  edit config/repos.json  |  docker compose up -d",
-        "Portable state stays clean: config/, data/, backups/, logs/, tasks.json and host bundles",
-        "To migrate: inventory -> bundle-create -> secrets-export -> reconcile -> timer-install",
-        "Keep secrets out of git: .env, tokens and SSH material go in the encrypted secrets pack",
+        "Quickstart: omni  |  omni guide  |  omni connect --host <ip> --user <user>",
+        "Maleta portable: omni briefcase --full --output ~/briefcase.json",
+        "Migration path: SSH Connect -> Maleta -> Restore -> Migrate Sync",
+        "Keep secrets out of git: API keys and SSH material stay in the encrypted bundle",
     ]
     box("OMNI CONTROL SURFACE", tips, width=84, accent=C.PRIMARY)
 
@@ -853,7 +859,7 @@ def print_logo(tagline=True, compact=False, animated=False, minimal=False):
         sys.stdout.write(C.R)
         return
     if compact:
-        banner = f"✦ omni · v{OMNI_VERSION} · Supreme Coordinator"
+        banner = f"✦ omni · v{OMNI_VERSION} · Portable migration CLI"
         print("  " + q(C.GLD_BRIGHT, banner, bold=True))
         print()
         sys.stdout.write(C.R)
@@ -865,7 +871,7 @@ def print_logo(tagline=True, compact=False, animated=False, minimal=False):
             ghost_write(tl, color=C.G2, delay=0.01)
         else:
             print("  " + q(C.G2, tl))
-        print("  " + q(C.GLD_BRIGHT, "✦") + " " + q(C.G3, "OmniSync · Enterprise Edition"))
+        print("  " + q(C.GLD_BRIGHT, "✦") + " " + q(C.G3, "OmniSync · by Black Boss"))
         hr()
     print()
     sys.stdout.write(C.R)
@@ -2352,10 +2358,10 @@ class OmniCore:
         render_help_surface(
             self.host_snapshot,
             [
-                "Quickstart: cp .env.example .env  |  edit config/repos.json  |  docker compose up -d",
-                "Portable state stays clean: config/, data/, backups/, logs/, tasks.json and host bundles",
-                "To migrate: inventory -> bundle-create -> secrets-export -> reconcile -> timer-install",
-                "Keep secrets out of git: .env, tokens and SSH material go in the encrypted secrets pack",
+                "Quickstart: omni  |  omni guide  |  omni connect --host <ip> --user <user>",
+                "Maleta portable: omni briefcase --full --output ~/briefcase.json",
+                "Migration path: SSH Connect -> Maleta -> Restore -> Migrate Sync",
+                "Keep secrets out of git: API keys and SSH material stay in the encrypted bundle",
             ],
             version=OMNI_VERSION,
             codename=OMNI_CODENAME,
@@ -2363,18 +2369,18 @@ class OmniCore:
         )
         print()
         section("Common Flows")
-        bullet("Mover todo /home/ubuntu  -> omni start -> Migrate", C.GRN)
-        dim("Omni restaura bundles, secretos, dependencias, compose y PM2.")
-        bullet("Usar esta terminal como puente  -> omni start -> Bridge", C.GRN)
-        dim("Ideal desde PowerShell o una máquina con poco disco local.")
-        bullet("Crear respaldo real  -> omni capture --profile full-home", C.GRN)
-        dim("Luego saca `backups/host-bundles` fuera del host actual.")
+        bullet("Mover un host completo  -> omni start -> Migrate Sync", C.GRN)
+        dim("Omni genera maleta, restore script, bundles y deja el destino listo.")
+        bullet("Conectar dos máquinas por SSH  -> omni start -> SSH Connect", C.GRN)
+        dim("Ideal para enviar el payload directo al destino con rsync o SFTP.")
+        bullet("Crear maleta portable  -> omni briefcase --full", C.GRN)
+        dim("Genera inventory real, contrato portable y restore shell script.")
         bullet("Configurar Omni Agent  -> omni agent", C.GRN)
         dim("Selector visual para Claude, GPT, Gemini, Mistral, Ollama o endpoint compatible.")
         bullet("Hablar con Omni Agent  -> omni chat \"resume el host\"", C.GRN)
         dim("Puede ejecutar comandos `omni`, explicar salida y proponer el siguiente paso.")
         bullet("Abrir el launchpad operativo  -> omni guide", C.GRN)
-        dim("Menú con flechas, ETA y acceso a Connect / Briefcase / Restore / Agent.")
+        dim("Menú con flechas, ETA y acceso a SSH Connect / Maleta / Restore / Agent.")
         nl()
 
         section("OmniSync - Command Reference")
@@ -2470,7 +2476,7 @@ class OmniCore:
         hr()
         bullet("Migration: inventory -> bundle -> secrets -> reconcile -> timer", C.G3)
         bullet("Quickstart: curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash", C.G3)
-        bullet("Default entrypoint: run `omni` and choose bridge/capture/restore/migrate", C.G3)
+        bullet("Default entrypoint: run `omni` and choose SSH Connect / Maleta / Restore / Migrate Sync", C.G3)
         print("  " + q(C.G3, f"OmniSync v{OMNI_VERSION} '{OMNI_CODENAME}'"))
         print("  " + q(C.G3, "Run 'omni <command>' to execute"))
         print()
@@ -2591,14 +2597,19 @@ class OmniCore:
             except Exception:
                 profile = self.normalize_profile("")
 
-        print_logo(tagline=False)
-        render_command_header(
-            "Omni Guided Start",
-            "Detect the host, choose the migration path and keep the operator in control",
-            dry_run=self.is_dry_run(),
-            snapshot=self.host_snapshot,
+        print()
+        render_guided_start_surface(
+            self.host_snapshot,
+            [
+                "Quickstart: omni  |  omni guide  |  omni connect --host <ip> --user <user>",
+                "Maleta portable: omni briefcase --full --output ~/briefcase.json",
+                "Migration path: SSH Connect -> Maleta -> Restore -> Migrate Sync",
+                "Keep secrets out of git: tokens and SSH material stay in the encrypted bundle.",
+            ],
+            version=OMNI_VERSION,
+            codename=OMNI_CODENAME,
         )
-        render_help_overview()
+        print()
         section("Guided Start")
         kv("Detected Platform", f"{info_obj.system} / {info_obj.shell} / {info_obj.package_manager}", color=C.GRN)
         kv("Mode", "accept-all" if effective_accept_all else "guided", color=C.YLW if effective_accept_all else C.GRN)
@@ -2642,29 +2653,37 @@ class OmniCore:
                 raise
             chosen_flow = flow_options[selected].key
 
-        if chosen_flow in {"bridge", "capture", "restore", "migrate"}:
+        if chosen_flow in {"briefcase", "restore", "migrate-sync"}:
             profile = self.choose_profile(accept_all=effective_accept_all, current_profile=profile)
 
         if chosen_flow == "advanced":
             self.show_help()
             return
-        if chosen_flow == "bridge":
-            self.bridge_mode(accept_all=effective_accept_all, profile=profile)
+        if chosen_flow == "connect":
+            self.connect_cmd(profile=profile or FULL_HOME_PROFILE)
             return
-        if chosen_flow == "capture":
-            self.capture_host_cmd(accept_all=effective_accept_all, profile=profile)
+        if chosen_flow == "briefcase":
+            self.show_briefcase(profile=profile or FULL_HOME_PROFILE, full=True)
             return
         if chosen_flow == "restore":
             self.restore_host_cmd(accept_all=effective_accept_all, install_timer=effective_accept_all, profile=profile)
             return
-        if chosen_flow == "migrate":
-            self.migrate_host_cmd(accept_all=effective_accept_all, install_timer=effective_accept_all, profile=profile)
+        if chosen_flow == "migrate-sync":
+            self.migrate_sync_cmd(
+                "create",
+                accept_all=effective_accept_all,
+                profile=profile or FULL_HOME_PROFILE,
+                full=True,
+            )
             return
         if chosen_flow == "doctor":
             self.show_doctor()
             return
         if chosen_flow == "agent":
             self.agent_cmd(accept_all=effective_accept_all)
+            return
+        if chosen_flow == "chat":
+            self.chat_cmd("")
             return
         self.show_help()
 
@@ -2699,7 +2718,7 @@ class OmniCore:
             self.connect_cmd()
             return
         if entry.key == "briefcase":
-            self.show_briefcase(profile=self.normalize_profile("full-home"))
+            self.show_briefcase(profile=self.normalize_profile("full-home"), full=True)
             return
         if entry.key == "restore":
             self.restore_host_cmd(accept_all=self.is_dry_run())
@@ -2707,7 +2726,7 @@ class OmniCore:
         if entry.key == "agent":
             self.agent_cmd(accept_all=False)
             return
-        self.migrate_sync_cmd()
+        self.migrate_sync_cmd("create", profile=self.normalize_profile("full-home"), full=True)
 
     def connect_cmd(
         self,
@@ -4029,7 +4048,7 @@ logging.basicConfig(
 logger = logging.getLogger("omni.core")
 
 def main():
-    parser = argparse.ArgumentParser(description="OmniSync - The Supreme Coordinator", add_help=False)
+    parser = argparse.ArgumentParser(description="OmniSync - Portable migration CLI", add_help=False)
     parser.add_argument("action", nargs="?", default="start", help="Action to perform")
     parser.add_argument("--interval", type=int, default=300, help="Interval for watch mode (seconds)")
     parser.add_argument("--lines", type=int, default=50, help="Number of log lines")

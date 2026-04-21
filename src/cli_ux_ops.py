@@ -208,7 +208,7 @@ def build_help_surface_lines(
     version: str = "",
     codename: str = "",
     tagline: str = "Automation at scale.",
-    edition: str = "OmniSync · Enterprise Edition",
+    edition: str = "OmniSync · by Black Boss",
 ) -> list[str]:
     host = str(snapshot.get("system", "unknown"))
     release = str(snapshot.get("release", "unknown"))
@@ -261,9 +261,83 @@ def render_help_surface(
     version: str = "",
     codename: str = "",
     tagline: str = "Automation at scale.",
-    edition: str = "OmniSync · Enterprise Edition",
+    edition: str = "OmniSync · by Black Boss",
 ) -> None:
     for line in build_help_surface_lines(
+        snapshot,
+        tips,
+        version=version,
+        codename=codename,
+        tagline=tagline,
+        edition=edition,
+    ):
+        print(f"  {line}".rstrip())
+
+
+def build_guided_start_surface_lines(
+    snapshot: Dict[str, Any],
+    tips: list[str],
+    *,
+    version: str = "",
+    codename: str = "",
+    tagline: str = "Move a machine without rebuilding it by hand.",
+    edition: str = "OmniSync · by Black Boss",
+) -> list[str]:
+    host = str(snapshot.get("system", "unknown"))
+    release = str(snapshot.get("release", "unknown"))
+    shell = str(snapshot.get("shell", "unknown"))
+    package_manager = str(snapshot.get("package_manager", "unknown"))
+    cpu_cores = int(snapshot.get("cpu_cores", 0) or 0)
+    memory = _format_memory(snapshot)
+    disk = f"{snapshot.get('disk_free_gb', '0')} GB free / {snapshot.get('disk_total_gb', '0')} GB"
+    version_line = f"         ·  v{version} {codename}  ·".rstrip() if version or codename else "         ·  Omni  ·"
+
+    left_lines = HELP_STARBURST + [
+        "         O  M  N  I",
+        version_line,
+        "",
+        f"  {tagline}",
+        f"  ✦ {edition}",
+        "  ──────────────────────────────────────────────────────────────",
+    ]
+
+    guided_rows = [
+        f"Host: {host} {release}  ·  Shell: {shell}",
+        f"Pkg: {package_manager}  ·  CPU: {cpu_cores} cores",
+        f"RAM: {memory}  ·  Disk: {disk}",
+        "",
+        "Detect the host, choose the migration path",
+        "and keep the operator in control.",
+    ]
+    right_lines = (
+        _build_surface_box_lines("Omni Guided Start", guided_rows, width=78)
+        + [""]
+        + _build_surface_box_lines("OMNI CONTROL SURFACE", tips, width=78)
+    )
+
+    left_width = max(len(line) for line in left_lines)
+    total_lines = max(len(left_lines), len(right_lines))
+    rendered: list[str] = []
+    for idx in range(total_lines):
+        left = left_lines[idx] if idx < len(left_lines) else ""
+        right = right_lines[idx] if idx < len(right_lines) else ""
+        if right:
+            rendered.append(left.ljust(left_width + 4) + right)
+        else:
+            rendered.append(left)
+    return rendered
+
+
+def render_guided_start_surface(
+    snapshot: Dict[str, Any],
+    tips: list[str],
+    *,
+    version: str = "",
+    codename: str = "",
+    tagline: str = "Move a machine without rebuilding it by hand.",
+    edition: str = "OmniSync · by Black Boss",
+) -> None:
+    for line in build_guided_start_surface_lines(
         snapshot,
         tips,
         version=version,

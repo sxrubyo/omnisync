@@ -1,0 +1,56 @@
+{
+  "name": "omnisync",
+  "version": "2.1.0",
+  "description": "Portable migration CLI for SSH transfer, briefcase-based restore, and AI-assisted host rebuilds.",
+  "license": "MIT",
+  "author": "Black Boss",
+  "homepage": "https://github.com/sxrubyo/omnisync#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sxrubyo/omnisync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sxrubyo/omnisync/issues"
+  },
+  "bin": {
+    "omni": "npm/omni.js",
+    "omnisync": "npm/omni.js"
+  },
+  "files": [
+    "src/*.py",
+    "config/*.example.json",
+    "config/omni_agent_activation.example.txt",
+    "config/systemd/*.service",
+    "config/systemd/*.timer",
+    "bin/omni",
+    "npm/omni.js",
+    ".claude/skills/omni-sync/SKILL.md",
+    ".gemini/commands/omni-sync.toml",
+    ".gemini/commands/omni-agent.toml",
+    ".opencode/commands/omni-sync.md",
+    ".opencode/commands/omni-agent.md",
+    "install.sh",
+    "bootstrap.ps1",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "pack:check": "npm pack --dry-run --json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "migration",
+    "ssh",
+    "restore",
+    "briefcase",
+    "cli",
+    "devops",
+    "backup",
+    "sync"
+  ]
+}
