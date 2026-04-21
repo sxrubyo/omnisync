@@ -123,6 +123,28 @@ EOF
   chmod +x "$target"
 }
 
+write_shadow_wrapper_to() {
+  local target="$1"
+  mkdir -p "$(dirname "$target")"
+  cat >"$target" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+unset OMNI_CONFIG_DIR OMNI_STATE_DIR OMNI_BACKUP_DIR OMNI_BUNDLE_DIR OMNI_AUTO_BUNDLE_DIR
+unset OMNI_LOG_DIR OMNI_WATCH_STATE_FILE OMNI_ENV_FILE OMNI_AGENT_CONFIG_FILE OMNI_TASKS_FILE
+unset OMNI_REPOS_FILE OMNI_SERVERS_FILE OMNI_MANIFEST_FILE
+OMNI_HOME_DEFAULT="\$HOME/.omni"
+RUNTIME_PATH="\$OMNI_HOME_DEFAULT/runtime/bin/python"
+ENTRYPOINT_PATH="\$OMNI_HOME_DEFAULT/src/omni_core.py"
+if [ ! -x "\$RUNTIME_PATH" ] || [ ! -f "\$ENTRYPOINT_PATH" ]; then
+  printf 'ERR Omni runtime not found under %s. Re-run: curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n' "\$OMNI_HOME_DEFAULT" "${REPO_SLUG}" >&2
+  exit 1
+fi
+export OMNI_HOME="\$OMNI_HOME_DEFAULT"
+exec "\$RUNTIME_PATH" "\$ENTRYPOINT_PATH" "\$@"
+EOF
+  chmod +x "$target"
+}
+
 repair_shadow_wrapper() {
   local target="$1"
   [ -n "$target" ] || return 0
@@ -132,7 +154,7 @@ repair_shadow_wrapper() {
     local resolved
     resolved="$(readlink -f "$target" 2>/dev/null || true)"
     if [ -n "$resolved" ] && [ -w "$resolved" ]; then
-      write_wrapper_to "$resolved"
+      write_shadow_wrapper_to "$resolved"
       REPAIRED_OMNI_PATH="$resolved"
       return 0
     fi
@@ -140,7 +162,7 @@ repair_shadow_wrapper() {
 
   if [ -e "$target" ]; then
     if [ -w "$target" ]; then
-      write_wrapper_to "$target"
+      write_shadow_wrapper_to "$target"
       REPAIRED_OMNI_PATH="$target"
       return 0
     fi
@@ -148,7 +170,7 @@ repair_shadow_wrapper() {
   fi
 
   if [ -w "$(dirname "$target")" ]; then
-    write_wrapper_to "$target"
+    write_shadow_wrapper_to "$target"
     REPAIRED_OMNI_PATH="$target"
     return 0
   fi

@@ -96,6 +96,73 @@ class InstallDistributionTests(unittest.TestCase):
             self.assertEqual(auth_result.returncode, 0, msg=auth_result.stderr or auth_result.stdout)
             self.assertNotIn("Unknown action", auth_result.stdout + auth_result.stderr)
 
+    def test_install_script_repairs_external_shadow_wrapper_without_embedding_temp_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            install_home = base / "install-home"
+            local_bin = install_home / ".local" / "bin"
+            external_root = base / "external-wrapper"
+            shadow_bin = external_root / "bin"
+            shadow_target_dir = external_root / "worktree"
+            shadow_bin.mkdir(parents=True, exist_ok=True)
+            shadow_target_dir.mkdir(parents=True, exist_ok=True)
+
+            shadow_target = shadow_target_dir / "omni"
+            shadow_target.write_text("#!/usr/bin/env bash\necho stale-wrapper\n", encoding="utf-8")
+            shadow_target.chmod(0o755)
+
+            stale_wrapper = shadow_bin / "omni"
+            stale_wrapper.symlink_to(shadow_target)
+
+            env = os.environ.copy()
+            env["HOME"] = str(install_home)
+            env["PATH"] = f"{shadow_bin}:{local_bin}:{env['PATH']}"
+            env["OMNI_INSTALL_LOCAL_REPO"] = str(REPO_ROOT)
+            env["OMNI_INSTALL_SKIP_DEPENDENCY_BOOTSTRAP"] = "1"
+
+            result = subprocess.run(
+                ["bash", str(INSTALL_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+            repaired_script = shadow_target.read_text(encoding="utf-8")
+            self.assertNotIn(str(install_home / ".omni" / "runtime"), repaired_script)
+            self.assertIn("$HOME/.omni", repaired_script)
+
+            final_home = base / "final-home"
+            final_omni_home = final_home / ".omni"
+            final_omni_home.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["cp", "-a", str(install_home / ".omni"), str(final_omni_home)],
+                check=True,
+                cwd=REPO_ROOT,
+            )
+            subprocess.run(
+                ["rm", "-rf", str(install_home)],
+                check=True,
+                cwd=REPO_ROOT,
+            )
+
+            env_after_cleanup = os.environ.copy()
+            env_after_cleanup["HOME"] = str(final_home)
+            env_after_cleanup["PATH"] = f"{shadow_bin}:{env_after_cleanup['PATH']}"
+
+            help_result = subprocess.run(
+                [str(stale_wrapper), "help"],
+                cwd=REPO_ROOT,
+                env=env_after_cleanup,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(help_result.returncode, 0, msg=help_result.stderr or help_result.stdout)
+            self.assertIn("Omni Core - Command Reference", help_result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
