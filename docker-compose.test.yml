@@ -1,0 +1,25 @@
+services:
+  omni-core-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omni-core-test
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OMNI_HOME: /opt/omni-core
+      OMNI_CONFIG_DIR: /opt/omni-core/config
+      OMNI_STATE_DIR: /opt/omni-core/data
+      OMNI_BACKUP_DIR: /opt/omni-core/backups
+      OMNI_LOG_DIR: /opt/omni-core/logs
+      OMNI_TASKS_FILE: /opt/omni-core/tasks.json
+      OMNI_REPOS_FILE: /opt/omni-core/config/repos.json
+      OMNI_SERVERS_FILE: /opt/omni-core/config/servers.json
+    volumes:
+      - ./config:/opt/omni-core/config
+      - ./data-test:/opt/omni-core/data
+      - ./backups-test:/opt/omni-core/backups
+      - ./logs-test:/opt/omni-core/logs
+      - ./tasks.json:/opt/omni-core/tasks.json
+    command: ["watch", "--interval", "600"]

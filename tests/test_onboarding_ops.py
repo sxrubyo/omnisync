@@ -26,7 +26,6 @@ class OnboardingOpsTests(unittest.TestCase):
         self.assertEqual(normalize_flow_choice("puente"), "bridge")
         self.assertEqual(normalize_flow_choice("migrar"), "migrate")
         self.assertEqual(normalize_flow_choice("restore"), "restore")
-        self.assertEqual(normalize_flow_choice("chat"), "chat")
         self.assertEqual(normalize_flow_choice("expert"), "advanced")
 
     def test_recommended_start_flow_windows_prefers_bridge(self):
@@ -81,9 +80,7 @@ class OnboardingOpsTests(unittest.TestCase):
         menu = build_start_menu(info)
         self.assertEqual(menu["recommended_flow"], "migrate")
         self.assertFalse(menu["non_interactive"])
-        self.assertEqual(len(menu["options"]), 8)
-        self.assertTrue(any(option["key"] == "agent" for option in menu["options"]))
-        self.assertTrue(any(option["key"] == "chat" for option in menu["options"]))
+        self.assertEqual(len(menu["options"]), 6)
 
     def test_build_flow_prompt_mentions_recommendation(self):
         prompt = build_flow_prompt(
@@ -102,8 +99,6 @@ class OnboardingOpsTests(unittest.TestCase):
         )
         self.assertIn("Recommended default:", prompt)
         self.assertIn("Use this machine as a bridge", prompt)
-        self.assertIn("Configure Omni Agent", prompt)
-        self.assertIn("Chat with Omni Agent", prompt)
 
     def test_should_accept_all_honors_flags_and_env(self):
         self.assertTrue(should_accept_all(accept_all=True))

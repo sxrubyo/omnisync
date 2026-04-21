@@ -13,43 +13,6 @@ while [ -L "$SOURCE" ]; do
 done
 
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-SCRIPT_HOME="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-resolve_runtime_home() {
-  local candidate="$1"
-  if [[ -n "$candidate" && -f "$candidate/src/omni_core.py" ]]; then
-    printf '%s\n' "$candidate"
-  else
-    printf '%s\n' "$SCRIPT_HOME"
-  fi
-}
-
-repair_path_var() {
-  local name="$1"
-  local fallback="$2"
-  local current="${!name:-}"
-  if [[ -n "$current" ]]; then
-    if [[ -e "$current" || -d "$current" ]]; then
-      export "$name=$current"
-      return
-    fi
-  fi
-  export "$name=$fallback"
-}
-
-OMNI_HOME="$(resolve_runtime_home "${OMNI_HOME:-$SCRIPT_HOME}")"
-export OMNI_HOME
-repair_path_var OMNI_CONFIG_DIR "$OMNI_HOME/config"
-repair_path_var OMNI_STATE_DIR "$OMNI_HOME/data"
-repair_path_var OMNI_BACKUP_DIR "$OMNI_HOME/backups"
-repair_path_var OMNI_BUNDLE_DIR "$OMNI_BACKUP_DIR/host-bundles"
-repair_path_var OMNI_LOG_DIR "$OMNI_HOME/logs"
-repair_path_var OMNI_ENV_FILE "$OMNI_HOME/.env"
-repair_path_var OMNI_TASKS_FILE "$OMNI_HOME/tasks.json"
-repair_path_var OMNI_REPOS_FILE "$OMNI_HOME/config/repos.json"
-repair_path_var OMNI_SERVERS_FILE "$OMNI_HOME/config/servers.json"
-repair_path_var OMNI_MANIFEST_FILE "$OMNI_HOME/config/system_manifest.json"
-repair_path_var OMNI_AGENT_CONFIG_FILE "$OMNI_HOME/config/omni_agent.json"
-repair_path_var OMNI_WATCH_STATE_FILE "$OMNI_HOME/data/watch_snapshot.json"
+OMNI_HOME="${OMNI_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 exec python3 "$OMNI_HOME/src/omni_core.py" "$@"

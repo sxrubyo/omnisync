@@ -76,19 +76,6 @@ DEFAULT_COMPOSE_PROJECTS = [
     "~/xus-https",
 ]
 
-COMPOSE_FILE_NAMES = (
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "compose.yml",
-    "compose.yaml",
-)
-
-PM2_ECOSYSTEM_FILE_NAMES = (
-    "ecosystem.config.js",
-    "ecosystem.config.cjs",
-    "ecosystem.config.mjs",
-)
-
 DEFAULT_APT_PACKAGES = [
     "git",
     "rsync",
@@ -109,8 +96,6 @@ DEFAULT_NPM_GLOBAL_PACKAGES = [
     "pm2",
 ]
 
-DEFAULT_PYTHON_PACKAGES: List[str] = []
-
 DEFAULT_PROFILE = "production-clean"
 FULL_HOME_PROFILE = "full-home"
 
@@ -124,25 +109,6 @@ CACHE_HINTS = {
     "tmp",
     "output",
     "melissa-backups",
-}
-
-LOCAL_DISCOVERY_EXCLUDE_DIRS = {
-    ".git",
-    ".cache",
-    ".npm",
-    ".npm-global",
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    "output",
-    "tmp",
-    "backups",
-    "auto-bundles",
-    "host-bundles",
 }
 
 PRODUCT_HINTS = {
@@ -273,83 +239,6 @@ def discover_full_home_secret_paths(
     return sorted(found)
 
 
-def _dedupe_preserve(values: Iterable[str]) -> List[str]:
-    seen: Set[str] = set()
-    ordered: List[str] = []
-    for value in values:
-        item = str(value or "").strip()
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        ordered.append(item)
-    return ordered
-
-
-def discover_local_runtime_paths(home_root: str = "/home/ubuntu", *, max_depth: int = 4) -> Dict[str, Any]:
-    home = Path(expand_path(home_root, home_root)).resolve()
-    install_targets: List[str] = []
-    compose_projects: List[str] = []
-    pm2_ecosystems: List[str] = []
-    detected_projects: List[str] = []
-    runtime_markers: List[str] = []
-
-    if not home.exists():
-        return {
-            "ready": False,
-            "install_targets": [],
-            "compose_projects": [],
-            "pm2_ecosystems": [],
-            "detected_projects": [],
-            "runtime_markers": [],
-        }
-
-    for marker in (".n8n", ".pm2", ".nova", ".claude", ".codex", ".gemini"):
-        candidate = home / marker
-        if candidate.exists():
-            runtime_markers.append(str(candidate))
-
-    for root, dirs, files in os.walk(home):
-        root_path = Path(root)
-        rel_parts = root_path.relative_to(home).parts if root_path != home else ()
-        depth = len(rel_parts)
-        dirs[:] = [name for name in dirs if name not in LOCAL_DISCOVERY_EXCLUDE_DIRS]
-        if depth > max_depth:
-            dirs[:] = []
-            continue
-
-        file_names = set(files)
-        if "requirements.txt" in file_names or "package.json" in file_names:
-            install_targets.append(str(root_path))
-            detected_projects.append(str(root_path))
-        if any(name in file_names for name in COMPOSE_FILE_NAMES):
-            compose_projects.append(str(root_path))
-            detected_projects.append(str(root_path))
-        for ecosystem_name in PM2_ECOSYSTEM_FILE_NAMES:
-            if ecosystem_name in file_names:
-                pm2_ecosystems.append(str(root_path / ecosystem_name))
-
-    ready = len(_dedupe_preserve(detected_projects)) >= 2 or (
-        bool(runtime_markers) and bool(install_targets or compose_projects or pm2_ecosystems)
-    )
-    return {
-        "ready": ready,
-        "install_targets": _dedupe_preserve(install_targets),
-        "compose_projects": _dedupe_preserve(compose_projects),
-        "pm2_ecosystems": _dedupe_preserve(pm2_ecosystems),
-        "detected_projects": _dedupe_preserve(detected_projects),
-        "runtime_markers": _dedupe_preserve(runtime_markers),
-    }
-
-
-def merge_manifest_local_runtime_paths(manifest: Dict[str, Any], local_runtime: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    merged = dict(manifest or {})
-    payload = dict(local_runtime or {})
-    merged["install_targets"] = _dedupe_preserve(list(merged.get("install_targets", [])) + list(payload.get("install_targets", [])))
-    merged["compose_projects"] = _dedupe_preserve(list(merged.get("compose_projects", [])) + list(payload.get("compose_projects", [])))
-    merged["pm2_ecosystems"] = _dedupe_preserve(list(merged.get("pm2_ecosystems", [])) + list(payload.get("pm2_ecosystems", [])))
-    return merged
-
-
 def profile_presets(home_root: str = "/home/ubuntu") -> Dict[str, Dict[str, Any]]:
     home = expand_path(home_root, home_root)
     production_clean = build_default_manifest(home_root, profile=DEFAULT_PROFILE, include_profile_defaults=False)
@@ -370,7 +259,6 @@ def profile_presets(home_root: str = "/home/ubuntu") -> Dict[str, Dict[str, Any]
         "compose_projects": list(DEFAULT_COMPOSE_PROJECTS),
         "exclude_patterns": list(DEFAULT_EXCLUDE_PATTERNS),
         "apt_packages": list(DEFAULT_APT_PACKAGES),
-        "python_packages": list(DEFAULT_PYTHON_PACKAGES),
         "npm_global_packages": list(DEFAULT_NPM_GLOBAL_PACKAGES),
     }
     return {
@@ -417,7 +305,6 @@ def normalize_manifest(manifest: Dict[str, Any], home_root: str) -> Dict[str, An
         normalized[key] = [expand_path(item, home_root) for item in values]
     normalized["exclude_patterns"] = list(normalized.get("exclude_patterns", []))
     normalized["apt_packages"] = list(normalized.get("apt_packages", []))
-    normalized["python_packages"] = list(normalized.get("python_packages", []))
     normalized["npm_global_packages"] = list(normalized.get("npm_global_packages", []))
     return normalized
 
@@ -443,7 +330,6 @@ def build_default_manifest(
         "compose_projects": [expand_path(path, home_root) for path in DEFAULT_COMPOSE_PROJECTS],
         "exclude_patterns": list(DEFAULT_EXCLUDE_PATTERNS),
         "apt_packages": list(DEFAULT_APT_PACKAGES),
-        "python_packages": list(DEFAULT_PYTHON_PACKAGES),
         "npm_global_packages": list(DEFAULT_NPM_GLOBAL_PACKAGES),
     }
     return manifest

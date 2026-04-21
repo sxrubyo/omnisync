@@ -41,8 +41,6 @@ def write_capture_summary(
     manifest_path: Path,
     state_bundle: Path,
     secrets_bundle: Path,
-    installed_inventory_path: Optional[Path] = None,
-    installed_inventory: Optional[Dict[str, Any]] = None,
     output_path: Optional[Path] = None,
 ) -> Path:
     target = output_path or (bundle_dir / f"capture_summary_{_timestamp()}.json")
@@ -65,10 +63,6 @@ def write_capture_summary(
         "ip_candidates": identity.ip_candidates,
         "source": identity.source,
     }
-    if installed_inventory_path:
-        payload["installed_inventory_path"] = str(installed_inventory_path)
-    if installed_inventory:
-        payload["installed_inventory_counts"] = dict(installed_inventory.get("counts") or {})
 
     target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return target

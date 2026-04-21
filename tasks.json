@@ -1,7 +1,7 @@
 [
     {
         "name": "Backup Melissa DB",
-        "command": "cp /home/ubuntu/melissa/melissa.db /home/ubuntu/melissa-backups/melissa_$(date +%Y%m%d_%H%M%S).db || echo 'Backup failed'"
+        "command": "cp /home/ubuntu/melissa/melissa.db /home/ubuntu/melissa-backups/melissa_$(date +%Y%m%d_%H%M%S).db && ls -1dt /home/ubuntu/melissa-backups/melissa_*.db 2>/dev/null | tail -n +121 | xargs -r rm -f || echo 'Backup failed'"
     },
     {
         "name": "Clean tmp",

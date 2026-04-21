@@ -7,9 +7,7 @@ USE_COMPOSE=false
 AUTO_SYNC=false
 USE_PM2=false
 INSTALL_TIMER=false
-RECOVER_APPS_IPS=false
 TIMER_ON_CALENDAR="${OMNI_TIMER_ON_CALENDAR:-daily}"
-PROFILE="${OMNI_PROFILE:-full-home}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -17,27 +15,9 @@ for arg in "$@"; do
     --sync) AUTO_SYNC=true ;;
     --pm2) USE_PM2=true ;;
     --timer) INSTALL_TIMER=true ;;
-    --recover-apps-ips) RECOVER_APPS_IPS=true ;;
     --on-calendar=*) TIMER_ON_CALENDAR="${arg#*=}" ;;
   esac
 done
-
-should_run_sync() {
-  local servers_file="$ROOT_DIR/config/servers.json"
-  if [ ! -f "$servers_file" ]; then
-    return 1
-  fi
-  if grep -q '"1.2.3.4"' "$servers_file"; then
-    return 1
-  fi
-  if [ -n "${SSH_AUTH_SOCK:-}" ]; then
-    return 0
-  fi
-  if [ -d "$HOME/.ssh" ] && find "$HOME/.ssh" -maxdepth 1 -type f ! -name "*.pub" ! -name "authorized_keys" ! -name "known_hosts*" ! -name "config" | grep -q .; then
-    return 0
-  fi
-  return 1
-}
 
 mkdir -p "$ROOT_DIR/config" "$ROOT_DIR/config/systemd" "$ROOT_DIR/data/servers" "$ROOT_DIR/backups/host-bundles" "$ROOT_DIR/logs"
 
@@ -65,14 +45,10 @@ else
   ln -sf "$ROOT_DIR/bin/omni" "$BIN_TARGET"
 fi
 
-"$ROOT_DIR/bin/omni" init --profile "$PROFILE" >/dev/null || true
+"$ROOT_DIR/bin/omni" init >/dev/null || true
 
 if $AUTO_SYNC; then
-  if should_run_sync; then
-    "$ROOT_DIR/bin/omni" sync || true
-  else
-    echo "Skipping initial sync: no remote SSH identity configured yet or servers.json still uses placeholders."
-  fi
+  "$ROOT_DIR/bin/omni" sync || true
 fi
 
 if $USE_PM2; then
@@ -80,11 +56,7 @@ if $USE_PM2; then
 fi
 
 if $USE_COMPOSE; then
-  MIGRATE_ARGS=(migrate --accept-all --profile "$PROFILE")
-  if $RECOVER_APPS_IPS; then
-    MIGRATE_ARGS+=(--recover-apps-ips)
-  fi
-  "$ROOT_DIR/bin/omni" "${MIGRATE_ARGS[@]}"
+  docker compose -f "$ROOT_DIR/docker-compose.yml" up -d --build
 fi
 
 if $INSTALL_TIMER; then
@@ -95,7 +67,7 @@ cat <<EOF
 Omni Core instalado en: $ROOT_DIR
 
 Modo automático:
-  ./install.sh --compose --sync --timer
+  install.sh --compose --sync --timer
 
 Archivos clave:
   .env
@@ -118,6 +90,5 @@ Comandos:
   omni reconcile
   omni timer-install
   omni sync
-  omni migrate --accept-all
-  omni migrate --accept-all --recover-apps-ips
+  docker compose ps
 EOF

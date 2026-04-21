@@ -1,95 +1,85 @@
 # Omni Core v2.1 - The Supreme Coordinator
 
-Omni Core es un runtime de migración, reconstrucción y mantenimiento de hosts Linux. Su objetivo es dejar una máquina nueva en estado útil sin restauraciones manuales una por una, separando código, estado y secretos.
+Omni Core está orientado a restaurar un entorno productivo limpio en Linux o un `full-home` completo de `/home/ubuntu`, sincronizar estado real desde otros hosts y dejar mantenimiento automático sin arrastrar ruido innecesario.
 
-La entrada recomendada ya no es memorizar comandos bajos. La puerta principal es:
+Ahora el punto de entrada recomendado ya no es memorizar comandos bajos: es ejecutar `omni` o `omni start` y dejar que la CLI te guíe hacia `bridge`, `capture`, `restore`, `migrate` o `doctor`.
 
-```bash
-omni
-```
+Por defecto no intenta clonar `/home/ubuntu` tal cual.
+La regla base es preservar lo que sí construye producto y separar lo que debe viajar aparte. Si activas `full-home`, entonces sí captura literalmente todo `/home/ubuntu` como estado raíz y mantiene secretos aparte.
 
-o:
+## Flujo productivo limpio
 
-```bash
-omni start
-```
+Este es el flujo recomendado para una reinstalación real, una migración entre máquinas o una recuperación desde backup:
 
-Eso abre el flujo guiado para elegir entre `bridge`, `capture`, `restore`, `migrate`, `doctor` o `agent`.
+1. **Inventory**
+   - identificar qué es código, qué es estado y qué es ruido
+   - dejar fuera caches, `node_modules`, logs viejos, temporales y artefactos reproducibles
+   - conservar repos, configs, datos operativos y snapshots útiles
 
-Para hablar normal con Omni una vez configurada la IA:
+2. **Bundle state**
+   - empaquetar `config/`, `data/`, `backups/`, `logs/`, `tasks.json` y manifiestos operativos
+   - guardar el estado restaurable de forma determinista
+   - mantener la restauración portable entre Ubuntu/Linux
 
-```bash
-omni chat
-```
+3. **Secrets pack**
+   - exportar secretos aparte de todo lo demás
+   - incluir `.env`, tokens, credenciales SSH, llaves de servicio y sesiones sensibles
+   - cifrarlo antes de moverlo
+   - nunca versionarlo en Git ni mezclarlo con el bundle de estado
 
-Si quieres ver playbooks listos o sacar un comando PowerShell de auto-actualización:
+4. **Bootstrap**
+   - instalar dependencias base del host
+   - clonar o actualizar el repo privado
+   - ejecutar `install.sh --compose --sync`
+   - preparar `omni` en `/usr/local/bin`
 
-```bash
-omni examples
-omni auto --p
-```
+5. **Reconcile**
+   - reconciliar estado con `omni fix`
+   - sincronizar snapshots remotos con `omni sync`
+   - reforzar la configuración local sin tocar `src/`
+   - aplicar el mismo proceso cuantas veces haga falta; debe ser idempotente
 
-## Qué resuelve
+6. **Timer**
+   - programar reconciliación diaria con `systemd`
+   - ejecutar mantenimiento y sync cada 24 horas
+   - dejar un punto único de actualización que no dependa de intervención manual
 
-Omni sirve para:
+## Qué se preserva
 
-- capturar el estado real del host
-- exportar secretos aparte y cifrados
-- restaurar o migrar a otro servidor
-- corregir referencias viejas de IP y hostname
-- dejar backups automáticos
-- dejar mantenimiento diario con `systemd`
-- usar una terminal Windows/PowerShell solo como puente hacia Linux
-- hablar con Omni Agent en una interfaz conversacional real
+Omni Core trabaja bien cuando se conservan estas piezas:
 
-No intenta mezclar todo en Git. El código viaja por Git; el estado y los secretos viajan por `bundles`.
+- `config/`
+- `data/`
+- `backups/`
+- `logs/`
+- `tasks.json`
+- `.env` y secretos relacionados, pero solo en el secrets pack cifrado
+- repositorios productivos definidos en `config/repos.json`
+- inventario remoto de `config/servers.json`
 
-## Modelo mental
+## Qué no se debe arrastrar por defecto
 
-Omni trabaja con tres bloques:
-
-1. `state bundle`
-   Contiene estado restaurable del host según el manifest activo.
-
-2. `secrets bundle`
-   Contiene `.env`, claves, tokens, sesiones y material sensible cifrado.
-
-3. `manifest profile`
-   Decide qué se captura y cómo se reconstruye.
+- `node_modules`
+- `.cache`
+- `__pycache__`
+- logs históricos reproducibles
+- temporales de build
+- artefactos derivados que se pueden regenerar
+- `.git` en bundles de estado
 
 ## Perfiles
 
-### `production-clean`
+Omni usa perfiles de manifest para decidir qué captura y cómo activa la migración.
 
-Perfil productivo liviano. Mantiene lo importante sin arrastrar ruido innecesario.
+- `production-clean`: conserva la huella productiva principal, con estado y secretos separados
+- `full-home`: captura todo `/home/ubuntu` como raíz de estado y mantiene secretos aparte
+- el `system_manifest.example.json` del repositorio ya viene preparado para `full-home`
+- `omni init --profile full-home`: activa el perfil completo antes de capturar o migrar
+- `omni init --profile production-clean`: vuelve al perfil productivo limpio
 
-Úsalo cuando quieres:
+### Qué entra realmente en `full-home`
 
-- una migración limpia
-- reconstrucción portable
-- menor tamaño de bundle
-
-### `full-home`
-
-Captura literalmente todo `/home/ubuntu` como raíz de estado y deja secretos aparte.
-
-Úsalo cuando quieres:
-
-- llevarte todo el host
-- clonar un entorno completo
-- no perder `.codex`, `.agents`, `.nova`, `.n8n`, `melissa`, `nova-os`, `Workflows-n8n`, `whatsapp-bridge`, `xus-https`, `melissa-backups` y similares
-
-Activación:
-
-```bash
-omni init --profile full-home
-```
-
-## Qué entra en `full-home`
-
-Con `full-home`, Omni trata `/home/ubuntu` entero como estado.
-
-Eso incluye, entre otros:
+Si activas `full-home`, Omni trata `/home/ubuntu` entero como estado. Eso significa que sí entran, entre otras cosas:
 
 - `.codex`
 - `.agents`
@@ -102,600 +92,200 @@ Eso incluye, entre otros:
 - `Workflows-n8n`
 - `xus-https`
 - `melissa-backups`
-- `omni-core`
 
-`melissa-backups` importa si quieres reconstrucción real con histórico. Suele ser una de las carpetas más pesadas.
+`melissa-backups` importa si de verdad quieres poder reconstruir el host “con todo”. Suele ser uno de los bloques más pesados porque guarda respaldos históricos de Melissa. No es código fuente; es estado archivado.
 
-## Qué no reemplaza GitHub
+### GitHub público por unos segundos: qué sí y qué no
 
-Poner el repo público o clonar desde GitHub ayuda solo con el código de `omni-core`.
+Poner el repo de GitHub público por unos segundos sí puede hacer más fácil clonar `omni-core` o bajar el bootstrap en una máquina virgen.
 
-No reemplaza:
+Pero eso no sustituye una migración real. GitHub solo resuelve mejor el transporte del código del repositorio. No reemplaza:
 
-- `state bundle`
-- `secrets bundle`
+- bundles de estado
+- secrets pack
 - `.env`
 - claves SSH
 - sesiones
 - datos de `n8n`
 - dumps de PM2
-- estado vivo del host
+- estado vivo de `/home/ubuntu`
 
-La regla correcta es:
+La forma correcta sigue siendo:
 
-1. clonar `omni-core`
-2. inicializar perfil
-3. capturar estado
-4. exportar secretos
-5. mover bundles
-6. restaurar o migrar
+1. clonar o descargar `omni-core`
+2. ejecutar `omni init --profile full-home` si quieres todo `/home/ubuntu`
+3. correr `omni capture`
+4. mover `state bundle` + `secrets bundle`
+5. restaurar con `omni restore` o `omni migrate`
 
-## Inicio rápido
+### Automatización de host y backups
 
-### Camino recomendado
+Omni ya está orientado a que no tengas que ir persiguiendo IPs o snapshots a mano:
 
-```bash
-omni
-```
+- `omni start` y `omni doctor` diagnostican si el host actual sigue teniendo referencias al host viejo
+- `omni detect-ip` muestra la identidad actual y cuántos archivos siguen con drift
+- `omni migrate` reescribe referencias del host automáticamente por defecto
+- si quieres impedirlo, usas `omni migrate --skip-rewrite`
+- `omni rewrite-ip --apply` sigue existiendo como comando directo
 
-Flujos que verás:
+Además:
 
-- `Bridge`: usar la terminal actual como puente
-- `Capture`: crear recovery pack
-- `Restore`: restaurar desde bundle + secretos
-- `Migrate`: reconstruir host end-to-end
-- `Doctor`: auditar salud, disco, timers, drift y cleanup
-- `Agent`: configurar la IA operativa de Omni
+- `omni init`, `omni restore`, `omni migrate` y `omni rewrite-ip --apply` crean backup automático en `backups/auto-bundles`
+- el timer diario `omni-update.timer` ahora ejecuta primero `omni backup`, luego `omni fix` y `omni sync`
 
-### Si ya sabes lo que necesitas
+## Modos de instalación
 
-```bash
-omni doctor
-omni capture --profile full-home
-omni migrate --profile full-home --accept-all
-```
+### 0. Guía simple desde GitHub
 
-## Flujos recomendados
+Si no quieres complicarte con claves, wrappers ni PowerShell remoto:
 
-### 1. Capturar un host actual
+- [GUIA_INSTALACION_SIMPLE_GITHUB.md](/home/ubuntu/omni-core/GUIA_INSTALACION_SIMPLE_GITHUB.md)
+
+### 1. Bootstrap Linux local
+
+Si ya estás en la máquina destino:
 
 ```bash
-omni init --profile full-home
-export OMNI_SECRET_PASSPHRASE='tu-clave-fuerte'
-omni inventory --profile full-home
-omni capture --profile full-home
+bash bootstrap.sh git@github.com:sxrubyo/omni-core.git /opt/omni-core main
 ```
 
-Qué produce:
+Ese flujo:
 
-- `state bundle`
-- `secrets bundle`
-- `capture summary`
+- instala dependencias base de Ubuntu
+- clona o actualiza el repo privado
+- crea archivos base si faltan
+- ejecuta `omni sync`
+- levanta Docker Compose
 
-Luego saca `backups/host-bundles` fuera del host actual.
+### 2. Wrapper PowerShell a un host Linux remoto
 
-### 2. Restaurar en un host nuevo
+Desde otra PC, incluyendo PowerShell en Windows:
 
-```bash
-omni init --profile full-home
-export OMNI_SECRET_PASSPHRASE='la-misma-clave-fuerte'
-omni restore --profile full-home --accept-all
+```powershell
+pwsh ./bootstrap.ps1 -TargetHost 1.2.3.4 -User ubuntu -RepoUrl git@github.com:sxrubyo/omni-core.git -Branch main -InstallTimer
+Si no pasas `-Destination`, `bootstrap.ps1` escanea el host remoto, recomienda rutas y te deja elegir o escribir una personalizada.
 ```
 
-Úsalo cuando ya tienes los bundles en el host nuevo.
-
-### 3. Migrar host completo
-
-```bash
-omni init --profile full-home
-export OMNI_SECRET_PASSPHRASE='la-misma-clave-fuerte'
-omni migrate --profile full-home --accept-all
-```
-
-`migrate` hace más que `restore`: también aplica lógica de reconstrucción y reescritura automática de referencias de host.
-
-### 4. Usar PowerShell como puente
-
-PowerShell no ejecuta Omni nativamente como si fuera Linux. Lo usa como lanzador hacia Ubuntu remoto.
+Ese wrapper se conecta por SSH al host Linux, prepara paquetes base, clona o actualiza Omni Core y dispara el mismo bootstrap de producción.
+Si agregas `-InstallTimer`, también deja programado el reconcile diario con `systemd`.
 
 Guía dedicada:
 
 - [GUIA_POWERSHELL_WINDOWS.md](/home/ubuntu/omni-core/GUIA_POWERSHELL_WINDOWS.md)
 
-Bootstrap:
-
-```powershell
-pwsh .\bootstrap.ps1 -TargetHost 1.2.3.4 -User ubuntu -RepoUrl git@github.com:sxrubyo/omni-core.git -Branch main -InstallTimer
-```
-
-Si no pasas `-Destination`, `bootstrap.ps1`:
-
-- escanea el host remoto
-- recomienda rutas
-- te deja elegir una sugerida
-- o te deja marcar una personalizada
-
-### 5. Instalación simple desde GitHub
-
-Si no quieres pelear con wrappers:
-
-- [GUIA_INSTALACION_SIMPLE_GITHUB.md](/home/ubuntu/omni-core/GUIA_INSTALACION_SIMPLE_GITHUB.md)
-
-## Instalación
-
-### Linux local
-
-```bash
-bash bootstrap.sh https://github.com/sxrubyo/omni-core.git /opt/omni-core main
-```
-
-Si el clon local ya existe y tiene cambios o archivos sueltos, `bootstrap.sh` los guarda en un `git stash` antes de actualizar.
-
-### GitHub publico o privado
-
-```bash
-git clone https://github.com/sxrubyo/omni-core.git /opt/omni-core
-cd /opt/omni-core
-chmod +x install.sh bin/omni bootstrap.sh
-./install.sh --compose --sync --timer
-```
-
-### Carpeta copiada por SCP
+### 3. Carpeta copiada por SCP
 
 ```bash
 scp -r omni-core ubuntu@tu-servidor:/opt/omni-core
 ssh ubuntu@tu-servidor
 cd /opt/omni-core
 chmod +x install.sh bin/omni bootstrap.sh
-./install.sh --compose --sync --timer
+./install.sh --compose --sync
 ```
 
-## Arquitectura operativa
-
-### Inventory
-
-Clasifica el host en:
-
-- estado
-- secretos
-- ruido
-
-Comando:
+### 4. GitHub privado
 
 ```bash
-omni inventory
+git clone git@github.com:sxrubyo/omni-core.git /opt/omni-core
+cd /opt/omni-core
+chmod +x install.sh bin/omni bootstrap.sh
+./install.sh --compose --sync
 ```
 
-### Bundles
+## Entrada recomendada
 
-Estado:
-
-```bash
-omni bundle-create
-omni bundle-restore
-```
-
-Secretos:
+La superficie principal ahora es:
 
 ```bash
-omni secrets-export
-omni secrets-import
-```
-
-### Reconcile
-
-Reconstruye el host desde manifest + bundles:
-
-```bash
-omni reconcile --bundle-latest --secrets-latest
-```
-
-### Drift de host
-
-Omni detecta si el host nuevo sigue teniendo referencias del host viejo.
-
-Comandos:
-
-```bash
+omni
+omni start
+omni migrate sync
+omni briefcase
+omni restore-plan
+omni doctor
+omni capture
+omni restore
+omni migrate
 omni detect-ip
 omni rewrite-ip
-omni rewrite-ip --apply
+omni bridge
 ```
 
-`migrate` hace esto automáticamente por defecto.
+La regla práctica es:
 
-Si no quieres que lo haga:
+- `omni` o `omni start`: entrar al asistente guiado
+- `omni migrate sync`: superficie nueva para create/plan/capture/restore
+- `omni briefcase`: exportar el contrato portable del maletín de migración
+- `omni restore-plan`: derivar el plan de restauración según el host destino
+- `omni capture`: crear recovery pack completo
+- `omni restore`: restaurar bundle + secrets
+- `omni migrate`: reconstruir host y corregir referencias
+- `omni doctor`: revisar salud, bundles y problemas de configuración
+
+## Recuperación y reconciliación
+
+El punto de entrada operativo sigue siendo `install.sh` y la CLI `omni`.
+
+Comandos útiles:
 
 ```bash
-omni migrate --skip-rewrite
-```
-
-## Backups automáticos
-
-Omni ya deja respaldo automático en varios puntos críticos:
-
-- `omni init`
-- `omni restore`
-- `omni migrate`
-- `omni rewrite-ip --apply`
-
-Esos backups quedan en:
-
-```text
-backups/auto-bundles
-```
-
-### Backup por cambios
-
-`omni timer-install` instala también:
-
-- `omni-watch.service`
-
-Ese watcher:
-
-- vigila cambios en el scope del manifest
-- detecta add/modify/remove
-- dispara backup automático con cooldown
-
-### Backup diario
-
-`omni-update.timer` corre cada 24 horas y ejecuta:
-
-1. `omni backup`
-2. `omni fix`
-3. `omni sync`
-
-Instalación:
-
-```bash
-omni timer-install
-```
-
-## Omni Agent
-
-`omni agent` configura la IA operativa del host con selector visual estilo Melissa/OpenClaw.
-
-Comandos:
-
-```bash
-omni agent
-omni agent status
-omni agent list
-```
-
-Los prompts de `omni agent` para API keys, base URL y modelos personalizados están optimizados para pegar texto sin pelear con PowerShell, SSH ni terminales mixtos.
-
-### Proveedores soportados hoy
-
-- Claude Direct
-- OpenAI Direct
-- Azure OpenAI
-- Gemini Direct
-- Gemini OpenAI-compatible
-- OpenRouter
-- AWS Bedrock
-- xAI Grok
-- Groq
-- Qwen Model Studio
-- DeepSeek
-- Mistral
-- Cohere
-- Together AI
-- Perplexity
-- Custom OpenAI-compatible
-
-### Qué hace `omni agent list`
-
-Imprime:
-
-- proveedor
-- protocolo
-- variable de entorno
-- base URL
-- modelo por defecto
-- modelos sugeridos
-- documentación oficial
-
-### Prompt de activación
-
-Omni separa el proveedor principal de la identidad conversacional.
-
-- El proveedor principal lo eliges en `omni agent`
-- La identidad y propósito persistente viajan en `config/omni_agent_activation.txt`
-
-Ese archivo se crea automáticamente con `omni init` si no existe, viaja con `full-home` y sirve para que Omni/Codex conozca el propósito del workspace sin reemplazar el modelo elegido por el usuario.
-
-## Omni Chat
-
-`omni chat` abre una interfaz conversacional de terminal usando el provider elegido en `omni agent`.
-
-Comandos:
-
-```bash
-omni chat
-omni chat status
-omni chat "hazme un diagnóstico rápido del host"
-```
-
-Qué hace:
-
-- carga el provider principal configurado
-- aplica el prompt de activación persistente
-- guarda historial en `data/agent-chat`
-- soporta slash commands
-- puede sugerir comandos o listas de tareas por una capa de acciones separada
-- puede interceptar intents operativos como migración, capture, rewrite e inventario del stack
-- pide permiso según el perfil activo del chat antes de ejecutar acciones sensibles
-
-Slash commands principales:
-
-- `/help`
-- `/status`
-- `/new`
-- `/clear`
-- `/save`
-- `/run`
-- `/todo`
-- `/exec on|off`
-- `/permissions`
-- `/quit`
-
-La respuesta visible es conversacional normal. Si Omni necesita sugerir un comando o un plan, lo hace por debajo con acciones estructuradas para que el chat no suene a JSON ni a código.
-
-Perfiles de permisos:
-
-- `smart`: auto solo para acciones seguras; pregunta en installs, rewrite o shell
-- `ask`: pregunta antes de cada acción ejecutable
-- `auto`: auto para casi todo; solo frena acciones peligrosas
-- `all`: auto para todo
-
-Ejemplos:
-
-```bash
-omni chat
-# dentro del chat:
-/permissions smart
-/permissions all
-```
-
-### Nota sobre Claude 4.6
-
-En Omni:
-
-- Anthropic directo usa el catálogo oficial directo de Anthropic
-- Claude 4.6 quedó modelado por `AWS Bedrock`
-
-## Omni Examples
-
-`omni examples` imprime playbooks listos para copiar.
-
-Incluye:
-
-- arranque guiado
-- captura `full-home`
-- migración completa
-- diagnóstico rápido
-- rewrite de IP y hostname
-- configuración de `omni agent`
-- `omni chat`
-- `omni packages`
-- bridge send
-- purge
-
-Uso:
-
-```bash
-omni examples
-```
-
-## Omni Auto
-
-`omni auto` resume la automatización activa del host.
-
-Uso básico:
-
-```bash
-omni auto
-```
-
-Para sacar el one-liner de PowerShell listo para pegar:
-
-```bash
-omni auto --p
-```
-
-Si además quieres que Omni te genere el archivo `.ps1`:
-
-```bash
-omni auto --p --ps1-out ./omni-auto.ps1
-```
-
-Si quieres que Omni además te deje el bloque para crear el archivo directamente dentro de una carpeta Windows:
-
-```bash
-omni auto --p --windows-dir "C:\Users\santi\Downloads\Projects\Ubuntu"
-```
-
-Con valores reales:
-
-```bash
-omni auto --p \
-  --target-host ec2-54-160-79-60.compute-1.amazonaws.com \
-  --identity-file "C:\\Users\\santi\\Downloads\\materia oscura\\llave_maestra_aws.pem" \
-  --dest /home/ubuntu/omni-core \
-  --ps1-out ./omni-auto.ps1 \
-  --windows-dir "C:\\Users\\santi\\Downloads\\Projects\\Ubuntu"
-```
-
-Qué hace:
-
-- imprime un `pwsh .\bootstrap.ps1 ...` listo para usar
-- si omites `--dest`, `bootstrap.ps1` escanea el host remoto y recomienda la ruta
-- deja `-InstallTimer` activo para que la actualización remota quede automatizada
-- si pasas `--ps1-out`, también escribe el script PowerShell listo en disco
-- si pasas `--windows-dir`, además imprime el bloque listo para crear `omni-auto.ps1` dentro de esa carpeta Windows
-
-## Mapa de comandos
-
-### Entrada y flujos
-
-| Comando | Para qué sirve | Cuándo usarlo |
-|---|---|---|
-| `omni` | abre el asistente guiado | casi siempre |
-| `omni start` | igual que `omni` | cuando quieres ser explícito |
-| `omni commands` | muestra la superficie completa de comandos | cuando quieres recordar todo el mapa |
-| `omni examples` | imprime playbooks listos para copiar | cuando quieres guía rápida sin abrir todo el README |
-| `omni auto` | muestra automatización o genera el one-liner PowerShell | cuando quieres mantener o actualizar el host con un solo carril |
-| `omni doctor` | auditoría guiada del host | antes de migrar o después de restaurar |
-| `omni capture` | crea recovery pack del perfil activo | antes de apagar o mover un host |
-| `omni restore` | restaura estado + secretos | cuando ya tienes bundles en el host nuevo |
-| `omni migrate` | reconstruye host completo | cuando quieres mover o recrear servidor |
-| `omni bridge` | modo puente para crear/enviar/recibir packs | desde terminal intermedia o PowerShell |
-
-### Operación core
-
-| Comando | Para qué sirve | Nota |
-|---|---|---|
-| `omni check` | health check simple | revisión rápida |
-| `omni fix` | fix completo del sistema | mantenimiento correctivo |
-| `omni watch` | watcher de cambios + auto-backup | normalmente como servicio |
-| `omni status` | estado general | visión rápida |
-| `omni logs` | logs de Omni | soporte y diagnóstico |
-| `omni monitor` | monitoreo continuo | observación en vivo |
-
-### Estado y reconstrucción
-
-| Comando | Para qué sirve | Nota |
-|---|---|---|
-| `omni init` | crea config/runtime faltante | primer paso en host nuevo |
-| `omni inventory` | clasifica estado, secretos y ruido | previo a capture |
-| `omni packages` | enumera el stack instalado del host | APT, Python, npm global y PM2 |
-| `omni bundle-create` | exporta bundle de estado | modo experto |
-| `omni bundle-restore` | restaura bundle de estado | modo experto |
-| `omni secrets-export` | exporta pack cifrado de secretos | requiere passphrase |
-| `omni secrets-import` | importa pack cifrado de secretos | mismo passphrase |
-| `omni reconcile` | reconstruye desde manifest + bundles | base del restore experto |
-
-### Red, host y transferencias
-
-| Comando | Para qué sirve | Nota |
-|---|---|---|
-| `omni sync` | trae snapshots desde `servers.json` | rsync/scp |
-| `omni transfer` | transfiere archivos/directorios | uso manual |
-| `omni detect-ip` | detecta identidad actual del host | ve drift |
-| `omni rewrite-ip` | reescribe referencias viejas | usa `--apply` para ejecutar |
-| `omni chat` | abre el chat operativo de Omni Agent | usa el provider configurado |
-| `omni bridge send` | envía bundles a destino remoto | puente |
-| `omni bridge receive` | restaura desde bundles recibidos | puente |
-
-### Sistema, procesos y housekeeping
-
-| Comando | Para qué sirve | Nota |
-|---|---|---|
-| `omni restart` | reinicia servicios PM2 | operación rápida |
-| `omni backup` | crea backup manual | además existe auto-backup |
-| `omni clean` | limpia temporales y cachés | mantenimiento |
-| `omni purge` | libera disco borrando estado transferido y artefactos | usa `--yes` para ejecutar |
-| `omni repos` | muestra estado de repos | Git y rutas |
-| `omni processes` | muestra procesos PM2 | runtime |
-| `omni config` | muestra configuración actual | inspección |
-| `omni version` | versión de Omni | soporte |
-| `omni install` | guía portable de instalación | onboarding |
-| `omni timer-install` | instala timer diario + watcher | automatización |
-
-## Banderas importantes
-
-| Flag | Uso |
-|---|---|
-| `--profile production-clean|full-home` | elige alcance del manifest |
-| `--accept-all` | omite prompts de Omni |
-| `--yes` | confirma operaciones destructivas |
-| `--manifest` | path del manifest |
-| `--output` | archivo o directorio de salida |
-| `--bundle` | bundle de estado explícito |
-| `--secrets` | bundle de secretos explícito |
-| `--bundle-latest` | usa último bundle de estado |
-| `--secrets-latest` | usa último bundle de secretos |
-| `--target-root` | raíz de restauración |
-| `--passphrase-env` | variable con passphrase |
-| `--target-public-ip` | IP pública objetivo para rewrite |
-| `--target-private-ip` | IP privada objetivo para rewrite |
-| `--target-hostname` | hostname objetivo para rewrite |
-| `--apply` | aplica cambios en comandos de rewrite |
-| `--skip-rewrite` | desactiva rewrite automático en migrate |
-| `--protocol scp|rsync` | protocolo de transferencia |
-
-## Escenarios rápidos
-
-### Quiero llevarme todo `/home/ubuntu`
-
-```bash
-omni init --profile full-home
-omni capture --profile full-home
-```
-
-### Quiero reconstruir un servidor nuevo
-
-```bash
-omni init --profile full-home
-omni migrate --profile full-home --accept-all
-```
-
-### Quiero ver qué pesa antes de capturar
-
-```bash
-omni inventory --profile full-home
-```
-
-### Quiero ver el stack instalado real del host
-
-```bash
-omni packages
-omni packages --output /tmp/host-packages.json
-```
-
-### Quiero arreglar referencias viejas de IP
-
-```bash
+omni
+omni migrate sync
+omni migrate sync create
+omni migrate sync plan
+omni briefcase
+omni restore-plan
+omni doctor
+omni capture
+omni restore
+omni migrate
 omni detect-ip
-omni rewrite-ip /home/ubuntu --apply --accept-all
-```
-
-### Quiero liberar espacio sin tocar repos base
-
-```bash
+omni rewrite-ip
+omni bridge create
+omni bridge send --dest ubuntu@host:/ruta
+omni help
+omni status
+omni inventory
+omni bundle-create
+omni secrets-export
+omni reconcile --bundle-latest --secrets-latest
 omni purge
-omni purge --yes
+omni sync
+omni fix
+omni install
+omni logs
+omni backup
+docker compose up -d --build
+docker compose logs -f omni-core
 ```
 
-### Quiero incluir secretos en purge
+`omni doctor` revisa salud, bundles, manifest y problemas obvios como hosts placeholder.
+`omni briefcase` exporta el contrato portable que describe plataforma fuente, paths, paquetes, repos y defaults de restore.
+`omni restore-plan` compara ese contrato con el host actual y marca qué se aplica directo y qué necesita revisión manual.
+`omni migrate sync` agrupa esa nueva capa pública sin romper los comandos existentes de `capture`, `restore` y `migrate`.
+`omni capture` produce estado + secretos + resumen verificable.
+`omni migrate` reutiliza restore/reconcile y puede reescribir referencias de host/IP.
+`omni sync` trae snapshots y archivos remotos definidos en `config/servers.json`.
+`omni purge` hace un dry-run de todo lo que puede borrarse para recuperar disco; con `--yes` lo elimina de verdad.
 
-```bash
-omni purge --include-secrets --yes
-```
+## Reconciliación diaria
 
-### Quiero ver el catálogo de IA soportada
+La recomendación es dejar un `systemd timer` que ejecute reconciliación cada 24 horas.
 
-```bash
-omni agent list
-```
+La idea operativa es:
 
-### Quiero hablar con Omni normal
+- refrescar el repo
+- correr `omni fix`
+- correr `omni sync`
+- validar salud del stack
 
-```bash
-omni chat
-omni chat "revisa el host y dime los riesgos"
-# dentro del chat:
-/permissions smart
-```
+Si la máquina se reconstruye desde cero, el timer vuelve a instalarse junto con el bootstrap.
 
-## Inventario de servidores remotos
+## Inventario de servidores
 
 Plantilla:
 
-```text
-config/servers.example.json
-```
+- `config/servers.example.json`
 
 Ejemplo:
 
@@ -720,7 +310,7 @@ Ejemplo:
 }
 ```
 
-Los snapshots quedan en:
+Los snapshots remotos quedan en:
 
 ```text
 data/servers/<server>/<ruta-remota-normalizada>/
@@ -738,7 +328,41 @@ nano config/servers.json
 omni
 ```
 
+## Flujo recomendado de restauración
+
+1. clonar o copiar `omni-core`
+2. correr `omni init --profile full-home` si quieres llevar todo `/home/ubuntu`
+3. mover `bundle + secrets` al host nuevo
+4. ejecutar `omni restore` o `omni migrate`
+5. validar `omni doctor`
+6. revisar `omni detect-ip`
+7. si hace falta, ejecutar `omni rewrite-ip`
+
+## Liberar espacio
+
+Cuando la máquina ya quedó reconstruida y quieres recuperar disco sin tocar los repos que puedes volver a clonar desde GitHub:
+
+```bash
+omni purge
+omni purge --yes
+```
+
+Si además quieres eliminar secretos restaurados desde bundle:
+
+```bash
+omni purge --include-secrets --yes
+```
+
+Ese comando:
+
+- elimina bundles, snapshots y logs locales de Omni
+- elimina estado transferido que no está gestionado por Git
+- limpia `node_modules`, `.venv`, `build`, `dist`, `tmp`, `output` y otros artefactos dentro de repos Git
+- preserva por defecto los repos base clonados desde GitHub
+
 ## Simulación local
+
+Si quieres probar una migración en la misma máquina sin tocar producción:
 
 ```bash
 rsync -av --delete /opt/omni-core/ /opt/omni-core-test/
@@ -749,7 +373,7 @@ docker compose -p omni-core-test -f docker-compose.test.yml ps
 docker compose -p omni-core-test -f docker-compose.test.yml logs -f omni-core-test
 ```
 
-Parar simulación:
+Para tumbar la simulación:
 
 ```bash
 docker compose -p omni-core-test -f docker-compose.test.yml down
@@ -757,13 +381,8 @@ docker compose -p omni-core-test -f docker-compose.test.yml down
 
 ## Notas operativas
 
-- `omni sync` usa `rsync` o `scp`
-- GitHub privado requiere credenciales válidas en el host
-- el `state bundle` y el `secrets bundle` deben viajar por rutas separadas
-- PowerShell es lanzador/puente; la operación real sigue ocurriendo en Linux
-- el repo puede ser público para facilitar clone, pero la reconstrucción real sigue dependiendo de bundles + secretos
-
-## Documentación complementaria
-
-- [GUIA_INSTALACION_SIMPLE_GITHUB.md](/home/ubuntu/omni-core/GUIA_INSTALACION_SIMPLE_GITHUB.md)
-- [GUIA_POWERSHELL_WINDOWS.md](/home/ubuntu/omni-core/GUIA_POWERSHELL_WINDOWS.md)
+- `omni sync` trae archivos remotos por `rsync` o `scp`
+- para GitHub privado, el host necesita SSH o credenciales válidas
+- el bundle de estado y el secrets pack deben viajar por caminos separados
+- el wrapper PowerShell es el lanzador remoto; el bootstrap real sigue ocurriendo en Linux
+- el objetivo es que una nueva instancia vuelva a un estado útil sin depender de restauraciones manuales una por una

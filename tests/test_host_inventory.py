@@ -15,12 +15,10 @@ from host_inventory import (  # noqa: E402
     build_profile_manifest,
     build_state_exclude_patterns,
     classify_path,
-    discover_local_runtime_paths,
     discover_full_home_secret_paths,
     ensure_manifest,
     expand_path,
     is_excluded,
-    merge_manifest_local_runtime_paths,
     normalize_manifest,
     scan_home,
 )
@@ -122,43 +120,6 @@ class HostInventoryTests(unittest.TestCase):
             self.assertIn(str(home / "melissa" / ".env"), discovered)
             self.assertNotIn(str(home / "nova-os" / ".env.example"), discovered)
             self.assertNotIn(str(deep_cert), discovered)
-
-    def test_discover_local_runtime_paths_finds_projects_compose_and_pm2(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            (home / "melissa").mkdir()
-            (home / "melissa" / "requirements.txt").write_text("requests\n", encoding="utf-8")
-            (home / "nova-os").mkdir()
-            (home / "nova-os" / "package.json").write_text('{"name":"nova-os"}\n', encoding="utf-8")
-            (home / "nova-os" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-            (home / "whatsapp-bridge").mkdir()
-            (home / "whatsapp-bridge" / "ecosystem.config.cjs").write_text("module.exports={}\n", encoding="utf-8")
-            (home / ".n8n").mkdir()
-
-            discovered = discover_local_runtime_paths(tmp)
-
-            self.assertIn(str(home / "melissa"), discovered["install_targets"])
-            self.assertIn(str(home / "nova-os"), discovered["install_targets"])
-            self.assertIn(str(home / "nova-os"), discovered["compose_projects"])
-            self.assertIn(str(home / "whatsapp-bridge" / "ecosystem.config.cjs"), discovered["pm2_ecosystems"])
-            self.assertTrue(discovered["ready"])
-
-    def test_merge_manifest_local_runtime_paths_appends_unique_values(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            manifest = build_profile_manifest("full-home", tmp)
-            merged = merge_manifest_local_runtime_paths(
-                manifest,
-                {
-                    "install_targets": [str(home / "nova-os"), str(home / "melissa")],
-                    "compose_projects": [str(home / "nova-os")],
-                    "pm2_ecosystems": [str(home / "whatsapp-bridge" / "ecosystem.config.cjs")],
-                },
-            )
-
-            self.assertIn(str(home / "nova-os"), merged["install_targets"])
-            self.assertIn(str(home / "nova-os"), merged["compose_projects"])
-            self.assertIn(str(home / "whatsapp-bridge" / "ecosystem.config.cjs"), merged["pm2_ecosystems"])
 
 
 if __name__ == "__main__":

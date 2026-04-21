@@ -57,14 +57,6 @@ Y además:
 
 - `omni init`, `omni restore`, `omni migrate` y `omni rewrite-ip --apply` dejan backup automático en `backups/auto-bundles`
 - el timer diario ejecuta `omni backup`, luego `omni fix` y `omni sync`
-- `omni timer-install` deja también `omni-watch.service` para vigilar cambios del scope y disparar backup automático
-- `omni agent` abre el selector visual de proveedor para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible
-- `omni agent list` te deja ver todo el catálogo sin entrar al wizard
-- `omni chat` abre la interfaz conversacional normal de Omni usando el provider principal que elegiste
-- dentro de `omni chat`, `/permissions smart|ask|auto|all` controla cuándo te pide permiso antes de ejecutar
-- `omni packages` enumera APT, Python, npm global y PM2 del host
-- `omni examples` imprime playbooks listos para copiar
-- `omni auto --p` imprime el comando PowerShell de auto-actualización listo para pegar
 
 Tu caso correcto es este:
 
@@ -109,37 +101,64 @@ ubuntu@ip-xxx:~$
 
 Cuando veas eso, ya no estás en Windows: ya estás dentro del Ubuntu.
 
-## Paso 2. Ya dentro de Ubuntu, instala Git
+## Paso 2. Ya dentro de Ubuntu, instala Git y GitHub CLI
 
 Ahora sí, ya dentro del Ubuntu, pega esto:
 
 ```bash
 sudo apt update
-sudo apt install -y git
+sudo apt install -y git gh
 ```
 
-## Paso 3. Clona Omni Core sin login
+## Paso 3. Ya dentro de Ubuntu, inicia sesión en GitHub
 
-Si el repo está público, no necesitas iniciar sesión en GitHub. Pega esto:
+Pega esto:
 
 ```bash
-bash -c 'cd /home/ubuntu && git clone https://github.com/sxrubyo/omni-core.git "$OMNI_DIR"'
+gh auth login
 ```
 
-Si `"$OMNI_DIR"` ya existe y quieres actualizarlo aunque esté sucio, usa esto en vez de `git pull`:
+Cuando te pregunte:
+
+- `Where do you use GitHub?` -> `GitHub.com`
+- `What is your preferred protocol for Git operations?` -> `HTTPS`
+- `Authenticate Git with your GitHub credentials?` -> `Yes`
+- `How would you like to authenticate GitHub CLI?` -> `Login with a web browser`
+
+Como estás dentro de Ubuntu por SSH, normalmente te mostrará:
+
+- un enlace
+- un código
+
+Entonces haces esto:
+
+1. copias el código que te muestre
+2. abres el enlace en tu navegador normal
+3. pegas el código
+4. autorizas
+
+Luego valida:
 
 ```bash
-bash "$OMNI_DIR/bootstrap.sh" https://github.com/sxrubyo/omni-core.git "$OMNI_DIR" main
+gh auth status
 ```
 
-## Paso 4. Ejecuta la instalación
+## Paso 4. Clona Omni Core
 
 Todavía dentro de Ubuntu, pega esto:
 
 ```bash
+gh repo clone sxrubyo/omni-core "$OMNI_DIR"
 cd "$OMNI_DIR"
+```
+
+## Paso 5. Ejecuta la instalación
+
+Todavía dentro de Ubuntu, pega esto:
+
+```bash
 chmod +x install.sh bin/omni bootstrap.sh
-./install.sh --compose --timer
+./install.sh --compose --sync --timer
 ```
 
 Eso hace esto:
@@ -147,7 +166,7 @@ Eso hace esto:
 - prepara archivos base si faltan
 - instala `omni`
 - levanta Docker Compose
-- no fuerza `sync` si todavía no hay SSH remoto listo
+- ejecuta `sync`
 - instala el timer diario
 - si antes corriste `omni init --profile full-home`, el manifest ya quedará listo para capturar el home completo manteniendo secretos aparte
 
@@ -172,31 +191,18 @@ El preflight de `omni capture` ahora te va a mostrar antes de confirmar:
 
 Ahí vas a ver explícitamente si entran `.codex` y `melissa-backups`.
 
-## Paso 5. Verifica que quedó bien
+## Paso 6. Verifica que quedó bien
 
 Todavía dentro de Ubuntu, pega esto:
 
 ```bash
 cd "$OMNI_DIR"
 omni
-omni agent
-omni chat
-omni packages
 omni doctor
 omni inventory
 docker compose ps
 sudo systemctl status omni-update.timer --no-pager
 ```
-
-`omni chat` usa el provider principal que dejaste en `omni agent`.
-
-La identidad persistente del chat vive en:
-
-```text
-config/omni_agent_activation.txt
-```
-
-Ese archivo se crea con `omni init` si no existe y viaja con `full-home`.
 
 ## Resumen ultra corto
 
@@ -213,11 +219,13 @@ Luego, ya dentro de Ubuntu:
 
 ```bash
 sudo apt update
-bash /home/ubuntu/omni-core/bootstrap.sh https://github.com/sxrubyo/omni-core.git "$OMNI_DIR" main
+sudo apt install -y git gh
+gh auth login
+gh repo clone sxrubyo/omni-core "$OMNI_DIR"
+cd "$OMNI_DIR"
+chmod +x install.sh bin/omni bootstrap.sh
+./install.sh --compose --sync --timer
 omni
-omni agent
-omni chat
-omni packages
 omni doctor
 omni inventory
 ```

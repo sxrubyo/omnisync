@@ -9,6 +9,7 @@ import sys
 import os
 import json
 import time
+import getpass
 import threading
 import random
 import argparse
@@ -17,7 +18,6 @@ import shlex
 import shutil
 import platform
 import textwrap
-import ipaddress
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,27 +28,8 @@ from bundle_ops import (
     latest_or_explicit,
     restore_bundle,
 )
+from briefcase_ops import build_briefcase_manifest, build_restore_plan
 from agent_ops import env_has_value, get_provider, load_agent_config, provider_catalog, save_agent_config, upsert_env_value
-from chat_ops import (
-    chat_completion,
-    clean_assistant_output,
-    ensure_activation_prompt,
-    ensure_chat_permissions,
-    latest_chat_session_path,
-    load_chat_session,
-    load_env_value,
-    new_chat_session,
-    parse_action_block,
-    save_chat_session,
-)
-from operator_ops import build_operator_response, infer_migration_mode
-from permissions_ops import (
-    build_permission_prompt,
-    ensure_permissions_state,
-    evaluate_permission_decision,
-    parse_permissions_request,
-    render_permissions_lines,
-)
 from bridge_ops import (
     build_host_rewrite_context,
     load_capture_summary,
@@ -60,36 +41,17 @@ from host_inventory import (
     DEFAULT_PROFILE,
     FULL_HOME_PROFILE,
     build_default_manifest,
-    discover_local_runtime_paths,
     ensure_manifest,
     expand_path,
     human_size,
     load_manifest,
-    merge_manifest_local_runtime_paths,
     save_manifest,
     scan_home,
 )
 from ip_rewrite_ops import apply_rewrite_plan, build_rewrite_plan, detect_host_identity, preview_rewrite_plan
 from onboarding_ops import build_flow_options, normalize_flow_choice, should_accept_all
 from platform_ops import detect_platform_info
-from playbook_ops import (
-    DEFAULT_REF_NAME,
-    DEFAULT_REMOTE_USER,
-    DEFAULT_REPO_URL,
-    build_examples_catalog,
-    build_powershell_auto_command,
-    build_powershell_dropper_script,
-    build_powershell_auto_script,
-    build_windows_ps1_path,
-)
 from reconcile_ops import install_systemd_service, install_systemd_timer, reconcile_host
-from runtime_inventory_ops import (
-    capture_installed_inventory,
-    load_installed_inventory,
-    merge_manifest_runtime_inventory,
-    summarize_installed_inventory,
-    write_installed_inventory,
-)
 from watch_ops import capture_watch_snapshot, load_watch_snapshot, save_watch_snapshot, summarize_snapshot_diff
 
 
@@ -104,10 +66,6 @@ LOG_DIR = Path(os.environ.get("OMNI_LOG_DIR", OMNI_HOME / "logs")).resolve()
 WATCH_STATE_FILE = Path(os.environ.get("OMNI_WATCH_STATE_FILE", STATE_DIR / "watch_snapshot.json")).resolve()
 ENV_FILE = Path(os.environ.get("OMNI_ENV_FILE", OMNI_HOME / ".env")).resolve()
 AGENT_CONFIG_FILE = Path(os.environ.get("OMNI_AGENT_CONFIG_FILE", CONFIG_DIR / "omni_agent.json")).resolve()
-AGENT_ACTIVATION_FILE = Path(
-    os.environ.get("OMNI_AGENT_ACTIVATION_FILE", CONFIG_DIR / "omni_agent_activation.txt")
-).resolve()
-AGENT_CHAT_DIR = Path(os.environ.get("OMNI_CHAT_DIR", STATE_DIR / "agent-chat")).resolve()
 TASKS_FILE = Path(os.environ.get("OMNI_TASKS_FILE", OMNI_HOME / "tasks.json")).resolve()
 REPOS_FILE = Path(os.environ.get("OMNI_REPOS_FILE", CONFIG_DIR / "repos.json")).resolve()
 SERVERS_FILE = Path(os.environ.get("OMNI_SERVERS_FILE", CONFIG_DIR / "servers.json")).resolve()
@@ -117,11 +75,6 @@ SYSTEM_MANIFEST_FILE = Path(
 AUTO_BACKUP_ON_CHANGE = os.environ.get("OMNI_AUTO_BACKUP_ON_CHANGE", "1").strip().lower() in {"1", "true", "yes", "on"}
 AUTO_BACKUP_KEEP = max(1, int(os.environ.get("OMNI_AUTO_BACKUP_KEEP", "5")))
 WATCH_BACKUP_COOLDOWN = max(30, int(os.environ.get("OMNI_WATCH_BACKUP_COOLDOWN", "600")))
-VOLATILE_OMNI_SYNC_EXCLUDES = [
-    "data/servers",
-    "backups/auto-bundles",
-    "logs/omni.log",
-]
 
 
 def load_env_file(env_path: Path) -> None:
@@ -142,224 +95,6 @@ def load_env_file(env_path: Path) -> None:
 
 
 load_env_file(ENV_FILE)
-
-SSH_METADATA_FILES = {"authorized_keys", "config"}
-
-
-def discover_ssh_identity_candidates(ssh_dir: Path | None = None) -> List[Path]:
-    base_dir = Path(ssh_dir).expanduser() if ssh_dir else (Path.home() / ".ssh")
-    if not base_dir.exists() or not base_dir.is_dir():
-        return []
-
-    candidates: List[Path] = []
-    for candidate in sorted(base_dir.iterdir()):
-        name = candidate.name
-        if not candidate.is_file():
-            continue
-        if name in SSH_METADATA_FILES or name.endswith(".pub") or name.startswith("known_hosts"):
-            continue
-        candidates.append(candidate.resolve())
-    return candidates
-
-
-def resolve_server_identity_file(
-    server: Dict[str, Any],
-    ssh_dir: Path | None = None,
-    env: Optional[Dict[str, str]] = None,
-) -> str:
-    env_map = os.environ if env is None else env
-    explicit = str(server.get("identity_file") or env_map.get("OMNI_SSH_IDENTITY_FILE") or "").strip()
-    if explicit:
-        explicit_path = Path(os.path.expandvars(explicit)).expanduser()
-        if explicit_path.exists():
-            return str(explicit_path)
-
-    candidates = discover_ssh_identity_candidates(ssh_dir)
-    if len(candidates) == 1:
-        return str(candidates[0])
-    return ""
-
-
-def _normalize_ssh_options(raw_options: Any) -> List[str]:
-    if not raw_options:
-        return []
-    if isinstance(raw_options, str):
-        return [raw_options]
-    if isinstance(raw_options, list):
-        return [str(option).strip() for option in raw_options if str(option).strip()]
-    return []
-
-
-def build_ssh_transport_command(
-    server: Dict[str, Any],
-    ssh_dir: Path | None = None,
-    env: Optional[Dict[str, str]] = None,
-) -> str:
-    port = int(server.get("port", 22))
-    command: List[str] = ["ssh", "-p", str(port), "-o", "StrictHostKeyChecking=accept-new"]
-    identity_file = resolve_server_identity_file(server, ssh_dir=ssh_dir, env=env)
-    if identity_file:
-        command.extend(["-i", identity_file])
-    for option in _normalize_ssh_options(server.get("ssh_options")):
-        if option.startswith("-"):
-            command.append(option)
-        else:
-            command.extend(["-o", option])
-    return " ".join(shlex.quote(part) for part in command)
-
-
-def build_remote_sync_command(
-    server: Dict[str, Any],
-    remote_path: str,
-    target_dir: Path,
-    *,
-    ssh_dir: Path | None = None,
-    env: Optional[Dict[str, str]] = None,
-    delete: bool = True,
-    extra_excludes: Optional[List[str]] = None,
-    source_kind: str = "dir",
-) -> str:
-    user = str(server.get("user", "ubuntu"))
-    host = str(server.get("host", "")).strip()
-    port = int(server.get("port", 22))
-    protocol = str(server.get("protocol", "rsync")).strip().lower()
-    excludes = [str(pattern) for pattern in server.get("excludes", []) or [] if str(pattern).strip()]
-    excludes.extend(str(pattern) for pattern in (extra_excludes or []) if str(pattern).strip())
-    identity_file = resolve_server_identity_file(server, ssh_dir=ssh_dir, env=env)
-
-    if protocol == "scp":
-        parts: List[str] = ["scp", "-P", str(port), "-o", "StrictHostKeyChecking=accept-new"]
-        if identity_file:
-            parts.extend(["-i", identity_file])
-        for option in _normalize_ssh_options(server.get("ssh_options")):
-            if option.startswith("-"):
-                parts.append(option)
-            else:
-                parts.extend(["-o", option])
-        if source_kind == "dir":
-            parts.append("-r")
-        parts.extend([f"{user}@{host}:{remote_path}", str(target_dir)])
-        return " ".join(shlex.quote(part) for part in parts)
-
-    exclude_flags = " ".join(f"--exclude {shlex.quote(pattern)}" for pattern in excludes)
-    transport = build_ssh_transport_command(server, ssh_dir=ssh_dir, env=env)
-    normalized_remote = remote_path.rstrip("/") + "/" if source_kind == "dir" else remote_path
-    remote_spec = f"{user}@{host}:{shlex.quote(normalized_remote)}"
-    delete_flag = " --delete" if delete else ""
-    return (
-        f"rsync -az{delete_flag} -e {shlex.quote(transport)} {exclude_flags} "
-        f"{remote_spec} {shlex.quote(str(target_dir))}/"
-    ).strip()
-
-
-def resolve_latest_bundle_across_dirs(
-    bundle_dirs: List[Path],
-    explicit_path: str,
-    prefix: str,
-) -> Optional[Path]:
-    if explicit_path:
-        explicit = Path(explicit_path).expanduser()
-        return explicit if explicit.exists() else explicit
-
-    seen: set[str] = set()
-    for bundle_dir in bundle_dirs:
-        bundle_root = Path(bundle_dir).expanduser()
-        key = str(bundle_root.resolve()) if bundle_root.exists() else str(bundle_root)
-        if key in seen:
-            continue
-        seen.add(key)
-        candidate = latest_or_explicit(bundle_root, "", prefix)
-        if candidate and candidate.exists():
-            return candidate
-    return None
-
-
-def resolve_installed_inventory_across_dirs(
-    bundle_dirs: List[Path],
-    explicit_path: str = "",
-) -> Optional[Dict[str, Any]]:
-    if explicit_path:
-        explicit = Path(explicit_path).expanduser()
-        return load_installed_inventory(explicit.parent, explicit_path=str(explicit))
-
-    seen: set[str] = set()
-    for bundle_dir in bundle_dirs:
-        bundle_root = Path(bundle_dir).expanduser()
-        key = str(bundle_root.resolve()) if bundle_root.exists() else str(bundle_root)
-        if key in seen:
-            continue
-        seen.add(key)
-        payload = load_installed_inventory(bundle_root)
-        if payload:
-            return payload
-    return None
-
-
-def is_rsync_vanished_warning(code: int, output: str, error: str) -> bool:
-    if code != 24:
-        return False
-    combined = f"{output}\n{error}".lower()
-    return "file has vanished" in combined or "files vanished" in combined
-
-
-def _is_ip_literal(value: str) -> bool:
-    try:
-        ipaddress.ip_address(value)
-        return True
-    except ValueError:
-        return False
-
-
-def enrich_rewrite_context_from_servers(
-    context: Dict[str, Any],
-    servers: List[Dict[str, Any]],
-    identity: Any,
-) -> Dict[str, Any]:
-    if context.get("summary_found") or not servers:
-        return context
-
-    current_targets = {
-        str(getattr(identity, "public_ip", "") or "").strip(),
-        str(getattr(identity, "private_ip", "") or "").strip(),
-        str(getattr(identity, "hostname", "") or "").strip(),
-        str(getattr(identity, "fqdn", "") or "").strip(),
-    }
-    candidates: List[str] = []
-    for server in servers:
-        host = str(server.get("host", "")).strip()
-        if not host or host == "1.2.3.4" or host in current_targets:
-            continue
-        if host not in candidates:
-            candidates.append(host)
-
-    if not candidates:
-        return context
-
-    replacements = dict(context.get("replacements") or {})
-    target_ip = str(getattr(identity, "public_ip", "") or getattr(identity, "private_ip", "") or "").strip()
-    target_host = str(getattr(identity, "hostname", "") or getattr(identity, "fqdn", "") or "").strip()
-    chosen_source = candidates[0]
-    for candidate in candidates:
-        if _is_ip_literal(candidate) and target_ip:
-            replacements.setdefault(candidate, target_ip)
-        elif target_host:
-            replacements.setdefault(candidate, target_host)
-
-    source_identity = dict(context.get("source_identity") or {})
-    if _is_ip_literal(chosen_source):
-        source_identity.setdefault("public_ip", chosen_source)
-    else:
-        source_identity.setdefault("hostname", chosen_source)
-
-    enriched = dict(context)
-    enriched["summary_found"] = bool(replacements)
-    enriched["summary"] = enriched.get("summary") or {
-        "source": "servers_json",
-        "source_identity": source_identity,
-    }
-    enriched["source_identity"] = source_identity
-    enriched["replacements"] = replacements
-    return enriched
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLATFORM COMPATIBILITY
@@ -492,12 +227,9 @@ ALIASES = {
     "m": "monitor", "cfg": "config", "v": "version", "st": "stats",
     "proc": "processes", "repo": "repos", "up": "update", "cl": "clean",
     "i": "init",
-    "rai": "recover-apps-ips",
     "tr": "transfer",
-    "ex": "examples",
-    "pb": "examples",
-    "a": "auto",
-    "cmd": "commands",
+    "bc": "briefcase",
+    "rp": "restore-plan",
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -608,29 +340,6 @@ def _is_tty() -> bool:
         return False
 
 
-def _should_buffer_menu_digits(option_count: int) -> bool:
-    return option_count >= 10
-
-
-def _apply_menu_digit_input(buffer: str, key: str, option_count: int) -> tuple[str, Optional[int]]:
-    if not key.isdigit():
-        return buffer, None
-    if not _should_buffer_menu_digits(option_count):
-        numeric = int(key) - 1
-        return "", numeric if 0 <= numeric < option_count else None
-    max_digits = max(2, len(str(option_count)))
-    next_buffer = (buffer + key)[:max_digits]
-    return next_buffer, None
-
-
-def _resolve_buffered_menu_selection(buffer: str, current: int, option_count: int) -> int:
-    if buffer.isdigit():
-        numeric = int(buffer) - 1
-        if 0 <= numeric < option_count:
-            return numeric
-    return current
-
-
 def select_menu(
     options: List[str],
     *,
@@ -648,7 +357,6 @@ def select_menu(
     descriptions = descriptions or []
     icons = icons or []
     default = max(0, min(default, len(options) - 1))
-    digit_buffer = ""
 
     def fallback() -> int:
         if title:
@@ -719,14 +427,7 @@ def select_menu(
             out.append("       " + q(C.G3, "↓ hay más abajo") + "\n")
 
         out.append("\n")
-        if digit_buffer:
-            out.append("  " + q(C.PRIMARY, f"número: {digit_buffer}") + "\n")
-        dynamic_footer = footer or (
-            "↑/↓ seleccionar · j/k mover · Enter confirmar · número + Enter"
-            if _should_buffer_menu_digits(len(options))
-            else "↑/↓ seleccionar · j/k mover · Enter confirmar · número salto directo"
-        )
-        out.append("  " + q(C.G3, dynamic_footer) + "\n")
+        out.append("  " + q(C.G3, footer or "↑/↓ seleccionar · j/k mover · Enter confirmar · número salto directo") + "\n")
         sys.stdout.write("".join(out))
         sys.stdout.flush()
 
@@ -737,18 +438,16 @@ def select_menu(
         while True:
             ch = msvcrt.getch()
             if ch in (b"\r", b"\n"):
-                return _resolve_buffered_menu_selection(digit_buffer, current, len(options))
+                return current
             if ch == b"\x03":
                 raise KeyboardInterrupt
             if ch in (b"\x00", b"\xe0"):
                 ch2 = msvcrt.getch()
                 if ch2 == b"H" and current > 0:
                     current -= 1
-                    digit_buffer = ""
                     draw()
                 elif ch2 == b"P" and current < len(options) - 1:
                     current += 1
-                    digit_buffer = ""
                     draw()
                 continue
             try:
@@ -757,20 +456,14 @@ def select_menu(
                 continue
             if key in ("k", "K") and current > 0:
                 current -= 1
-                digit_buffer = ""
                 draw()
             elif key in ("j", "J") and current < len(options) - 1:
                 current += 1
-                digit_buffer = ""
-                draw()
-            elif key in ("\b", "\x08"):
-                digit_buffer = digit_buffer[:-1]
                 draw()
             elif key.isdigit():
-                digit_buffer, selection = _apply_menu_digit_input(digit_buffer, key, len(options))
-                if selection is not None:
-                    return selection
-                draw()
+                numeric = int(key) - 1
+                if 0 <= numeric < len(options):
+                    return numeric
     else:
         import os as _os
         import select as _sel
@@ -813,55 +506,21 @@ def select_menu(
         while True:
             key = read_key()
             if key == "\r":
-                return _resolve_buffered_menu_selection(digit_buffer, current, len(options))
+                return current
             if key == "\x03":
                 raise KeyboardInterrupt
             if key in ("UP", "k", "K") and current > 0:
                 current -= 1
-                digit_buffer = ""
                 draw()
             elif key in ("DOWN", "j", "J") and current < len(options) - 1:
                 current += 1
-                digit_buffer = ""
-                draw()
-            elif key in ("\x7f", "\b"):
-                digit_buffer = digit_buffer[:-1]
                 draw()
             elif key.isdigit():
-                digit_buffer, selection = _apply_menu_digit_input(digit_buffer, key, len(options))
-                if selection is not None:
-                    return selection
-                draw()
+                numeric = int(key) - 1
+                if 0 <= numeric < len(options):
+                    return numeric
 
     return current
-
-
-def prompt_paste_friendly_value(prompt: str, default: str = "", *, uppercase: bool = False) -> str:
-    suffix = f" [{default}]" if default else ""
-    print()
-    try:
-        answer = input(f"{prompt}{suffix}: ").strip()
-    except EOFError:
-        print()
-        return default
-    except KeyboardInterrupt:
-        print()
-        raise
-    value = answer or default
-    return value.upper() if uppercase else value
-
-
-def prompt_paste_friendly_secret(prompt: str) -> str:
-    print()
-    dim("Pega normal. Esta entrada se muestra para maximizar compatibilidad con PowerShell, SSH y terminales mixtos.")
-    try:
-        return input(f"{prompt}: ").strip()
-    except EOFError:
-        print()
-        return ""
-    except KeyboardInterrupt:
-        print()
-        raise
 
 
 def render_action_summary(title: str, lines: List[str], *, accent: Optional[str] = None, width: int = 88):
@@ -1302,7 +961,7 @@ class OmniCore:
         self.load_tasks()
 
     def ensure_runtime_dirs(self):
-        for path in (OMNI_HOME, CONFIG_DIR, STATE_DIR, BACKUP_DIR, BUNDLE_DIR, AUTO_BUNDLE_DIR, LOG_DIR, AGENT_CHAT_DIR):
+        for path in (OMNI_HOME, CONFIG_DIR, STATE_DIR, BACKUP_DIR, BUNDLE_DIR, AUTO_BUNDLE_DIR, LOG_DIR):
             path.mkdir(parents=True, exist_ok=True)
 
     def load_repo_entries(self) -> List[Any]:
@@ -1341,18 +1000,7 @@ class OmniCore:
         try:
             server_data = json.loads(SERVERS_FILE.read_text(encoding="utf-8"))
             servers = server_data.get("servers", server_data) if isinstance(server_data, dict) else server_data
-            if not isinstance(servers, list):
-                return []
-            normalized: List[Dict[str, Any]] = []
-            for server in servers:
-                if not isinstance(server, dict):
-                    continue
-                item = dict(server)
-                identity_file = str(item.get("identity_file") or "").strip()
-                if identity_file:
-                    item["identity_file"] = str(Path(os.path.expandvars(identity_file)).expanduser())
-                normalized.append(item)
-            return normalized
+            return servers if isinstance(servers, list) else []
         except Exception as e:
             debug(f"Failed to load servers.json: {e}")
             return []
@@ -1467,27 +1115,13 @@ class OmniCore:
         return AUTO_BUNDLE_DIR
 
     def prune_bundle_dir(self, bundle_dir: Path, keep: int = AUTO_BACKUP_KEEP) -> None:
-        for pattern in ("state_bundle_*", "secrets_bundle_*", "capture_summary_*.json", "installed_inventory_*.json"):
+        for pattern in ("state_bundle_*", "secrets_bundle_*", "capture_summary_*.json"):
             candidates = sorted(bundle_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
             for stale in candidates[keep:]:
                 try:
                     stale.unlink()
                 except OSError:
                     continue
-
-    def bundle_search_dirs(self, *, include_auto: bool = True) -> List[Path]:
-        directories = [self.bundle_dir, BACKUP_DIR]
-        if include_auto:
-            directories.append(self.auto_backup_dir())
-        unique: List[Path] = []
-        seen: set[str] = set()
-        for candidate in directories:
-            resolved = str(candidate.resolve()) if candidate.exists() else str(candidate)
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            unique.append(candidate)
-        return unique
 
     def create_recovery_pack(
         self,
@@ -1506,15 +1140,11 @@ class OmniCore:
         passphrase = self.read_passphrase(passphrase_env)
         state_bundle = create_state_bundle(target_dir, manifest)
         secrets_bundle = create_secrets_bundle(target_dir, manifest, passphrase=passphrase)
-        installed_inventory = capture_installed_inventory()
-        installed_inventory_path = write_installed_inventory(target_dir, installed_inventory)
         summary_path = write_capture_summary(
             bundle_dir=target_dir,
             manifest_path=selected_path,
             state_bundle=state_bundle,
             secrets_bundle=secrets_bundle,
-            installed_inventory_path=installed_inventory_path,
-            installed_inventory=installed_inventory,
         )
         if prune:
             self.prune_bundle_dir(target_dir, keep=AUTO_BACKUP_KEEP)
@@ -1524,8 +1154,6 @@ class OmniCore:
             "bundle_dir": str(target_dir),
             "state_bundle": str(state_bundle),
             "secrets_bundle": str(secrets_bundle),
-            "installed_inventory_path": str(installed_inventory_path),
-            "installed_inventory": installed_inventory,
             "summary_path": str(summary_path),
             "encrypted": bool(passphrase),
         }
@@ -1618,16 +1246,9 @@ class OmniCore:
     def sync_servers(self) -> Dict[str, Any]:
         logger = logging.getLogger("omni.core")
         results: List[Dict[str, Any]] = []
-        manifest: Optional[Dict[str, Any]] = None
 
         if not self.servers:
             return {"success": False, "message": f"No servers configured in {SERVERS_FILE}", "results": results}
-
-        if self.manifest_path.exists():
-            try:
-                manifest = load_manifest(self.manifest_path, str(Path.home()))
-            except Exception as err:
-                logger.warning("Unable to load manifest for sync alignment: %s", err)
 
         snapshot_root = STATE_DIR / "servers"
         snapshot_root.mkdir(parents=True, exist_ok=True)
@@ -1638,7 +1259,7 @@ class OmniCore:
             host = server.get("host")
             port = int(server.get("port", 22))
             protocol = server.get("protocol", "rsync")
-            paths = self.resolve_hydration_paths(server, manifest) or server.get("paths", [])
+            paths = server.get("paths", [])
             excludes = server.get("excludes", [])
 
             if not host or not paths:
@@ -1651,282 +1272,32 @@ class OmniCore:
             for remote_path in paths:
                 target_dir = server_root / path_to_snapshot_name(remote_path)
                 target_dir.mkdir(parents=True, exist_ok=True)
-                extra_excludes: List[str] = []
-                if Path(str(remote_path)).name == OMNI_HOME.name:
-                    extra_excludes.extend(VOLATILE_OMNI_SYNC_EXCLUDES)
-                elif manifest and self.normalize_profile(str(manifest.get("profile", ""))) == FULL_HOME_PROFILE:
-                    host_root = str(manifest.get("host_root") or "").strip()
-                    if host_root and Path(str(remote_path)).resolve() == Path(host_root).resolve():
-                        extra_excludes.extend(
-                            f"{OMNI_HOME.name}/{pattern}" for pattern in VOLATILE_OMNI_SYNC_EXCLUDES
-                        )
-                cmd = build_remote_sync_command(
-                    {
-                        "user": user,
-                        "host": host,
-                        "port": port,
-                        "protocol": protocol,
-                        "excludes": excludes,
-                        "identity_file": server.get("identity_file", ""),
-                        "ssh_options": server.get("ssh_options", []),
-                    },
-                    remote_path,
-                    target_dir,
-                    delete=True,
-                    extra_excludes=extra_excludes,
-                )
+                exclude_flags = " ".join([f"--exclude {shlex.quote(pattern)}" for pattern in excludes])
+
+                if protocol == "scp":
+                    cmd = f"scp -P {port} -r {user}@{host}:{shlex.quote(remote_path)} {shlex.quote(str(target_dir))}"
+                else:
+                    cmd = (
+                        f"rsync -az --delete -e \"ssh -p {port}\" {exclude_flags} "
+                        f"{user}@{host}:{shlex.quote(remote_path.rstrip('/') + '/') } {shlex.quote(str(target_dir))}/"
+                    )
 
                 logger.info("Syncing %s:%s", name, remote_path)
                 code, out, err = self.transfer._run_cmd(cmd)
-                vanished_warning = is_rsync_vanished_warning(code, out, err)
-                error = err if code != 0 and not vanished_warning else ""
-                if code != 0 and "Permission denied (publickey)" in error:
-                    hint = "Configure `identity_file` in config/servers.json or leave a single private key in ~/.ssh."
-                    error = f"{error}\n{hint}"
-                status = "ok"
-                if vanished_warning:
-                    status = "warning_vanished"
-                elif code != 0:
-                    status = "failed"
                 results.append({
                     "server": name,
                     "path": remote_path,
                     "protocol": protocol,
-                    "success": code == 0 or vanished_warning,
+                    "success": code == 0,
                     "target": str(target_dir),
-                    "error": error,
-                    "output": out if code == 0 or vanished_warning else "",
-                    "status": status,
+                    "error": err if code != 0 else "",
+                    "output": out if code == 0 else "",
                 })
 
         ok_count = sum(1 for item in results if item.get("success"))
         return {
             "success": ok_count == len(results) and len(results) > 0,
             "message": f"Synced {ok_count}/{len(results)} remote paths",
-            "results": results,
-        }
-
-    def has_ready_remote_source(self, manifest: Optional[Dict[str, Any]] = None) -> bool:
-        for server in self.servers:
-            host = str(server.get("host", "")).strip()
-            paths = self.resolve_hydration_paths(server, manifest)
-            if host and host != "1.2.3.4" and paths:
-                return True
-        return False
-
-    def resolve_hydration_paths(self, server: Dict[str, Any], manifest: Optional[Dict[str, Any]] = None) -> List[str]:
-        host = str(server.get("host", "")).strip()
-        if not host or host == "1.2.3.4":
-            return []
-
-        profile = self.normalize_profile(str((manifest or {}).get("profile", "")))
-        host_root = str((manifest or {}).get("host_root") or Path.home()).strip()
-        if profile == FULL_HOME_PROFILE and host_root:
-            return [host_root]
-
-        return [str(path).strip() for path in (server.get("paths", []) or []) if str(path).strip()]
-
-    def _snapshot_local_path(self, path: Path) -> Dict[str, Any]:
-        if not path.exists():
-            return {"kind": "missing", "entries": 0, "size_bytes": 0}
-        if path.is_file():
-            try:
-                size_bytes = path.stat().st_size
-            except OSError:
-                size_bytes = 0
-            return {"kind": "file", "entries": 1, "size_bytes": size_bytes}
-
-        entries = 0
-        size_bytes = 0
-        for root, dirs, files in os.walk(path):
-            entries += len(dirs) + len(files)
-            for file_name in files:
-                candidate = Path(root) / file_name
-                try:
-                    size_bytes += candidate.stat().st_size
-                except OSError:
-                    continue
-        return {"kind": "dir", "entries": entries, "size_bytes": size_bytes}
-
-    def _run_transfer_cmd_visible(self, cmd: str, label: str) -> Tuple[int, str, str]:
-        info(label)
-        if self.is_interactive():
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                output_lines: List[str] = []
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    text = line.rstrip("\n")
-                    output_lines.append(text)
-                    if text:
-                        print(f"     {text}", flush=True)
-                code = proc.wait()
-                return code, "\n".join(output_lines).strip(), ""
-            except Exception as exc:
-                return -1, "", str(exc)
-        return self.transfer._run_cmd(cmd)
-
-    def list_remote_directory_entries(self, server: Dict[str, Any], remote_root: str) -> List[Dict[str, str]]:
-        user = str(server.get("user", "ubuntu"))
-        host = str(server.get("host", "")).strip()
-        if not host or host == "1.2.3.4":
-            return []
-
-        transport = build_ssh_transport_command(server)
-        remote_cmd = f"find {shlex.quote(remote_root)} -mindepth 1 -maxdepth 1 -printf '%y\\t%P\\n' | sort"
-        cmd = f"{transport} {shlex.quote(f'{user}@{host}')} {shlex.quote(remote_cmd)}"
-        code, out, err = self.transfer._run_cmd(cmd)
-        if code != 0:
-            logging.getLogger("omni.core").warning(
-                "Unable to enumerate remote directory %s on %s: %s",
-                remote_root,
-                host,
-                (err or out or f"exit {code}").strip(),
-            )
-            return []
-
-        excludes = {str(pattern).strip() for pattern in (server.get("excludes", []) or []) if str(pattern).strip()}
-        entries: List[Dict[str, str]] = []
-        for raw_line in (out or "").splitlines():
-            raw = raw_line.strip()
-            if not raw:
-                continue
-            if "\t" in raw:
-                type_code, name = raw.split("\t", 1)
-            else:
-                type_code, name = "d", raw
-            name = name.strip().strip("/")
-            if not name or name in {".", ".."} or name in excludes:
-                continue
-            entries.append({
-                "path": str(Path(remote_root) / name),
-                "kind": "dir" if type_code == "d" else "file",
-            })
-        return entries
-
-    def expand_remote_hydration_paths(
-        self,
-        server: Dict[str, Any],
-        paths: List[str],
-        manifest: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, str]]:
-        profile = self.normalize_profile(str((manifest or {}).get("profile", "")))
-        host_root = str((manifest or {}).get("host_root") or Path.home()).strip()
-        if profile == FULL_HOME_PROFILE and host_root and paths == [host_root]:
-            expanded = self.list_remote_directory_entries(server, host_root)
-            if expanded:
-                return expanded
-        return [{"path": path, "kind": "dir"} for path in paths]
-
-    def hydrate_from_remote_servers(self, target_root: str = "/", manifest: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        logger = logging.getLogger("omni.core")
-        results: List[Dict[str, Any]] = []
-        root = Path(target_root).resolve()
-
-        if not self.servers:
-            return {"success": False, "message": f"No servers configured in {SERVERS_FILE}", "results": results}
-
-        for server in self.servers:
-            name = server.get("name") or server.get("host", "server")
-            user = server.get("user", "ubuntu")
-            host = str(server.get("host", "")).strip()
-            port = int(server.get("port", 22))
-            protocol = server.get("protocol", "rsync")
-            paths = self.expand_remote_hydration_paths(server, self.resolve_hydration_paths(server, manifest), manifest)
-            excludes = server.get("excludes", [])
-
-            if not host or host == "1.2.3.4" or not paths:
-                results.append({"server": name, "success": False, "error": "Missing host or paths"})
-                continue
-
-            for entry in paths:
-                remote_path = str(entry.get("path", "")).strip()
-                source_kind = str(entry.get("kind", "dir")).strip() or "dir"
-                if not remote_path:
-                    continue
-                destination = root / remote_path.lstrip("/")
-                extra_excludes: List[str] = []
-                try:
-                    omni_relative = OMNI_HOME.resolve().relative_to(destination.resolve())
-                    if omni_relative.parts:
-                        extra_excludes.append(str(Path(*omni_relative.parts).as_posix()))
-                    else:
-                        results.append({
-                            "server": name,
-                            "path": remote_path,
-                            "protocol": protocol,
-                            "success": True,
-                            "target": str(destination),
-                            "error": "",
-                            "output": "",
-                            "status": "skipped_omni_home",
-                        })
-                        continue
-                except ValueError:
-                    pass
-                before_snapshot = self._snapshot_local_path(destination)
-                sync_target = destination if source_kind == "dir" else destination.parent
-                sync_target.mkdir(parents=True, exist_ok=True)
-                cmd = build_remote_sync_command(
-                    {
-                        "user": user,
-                        "host": host,
-                        "port": port,
-                        "protocol": protocol,
-                        "excludes": excludes,
-                        "identity_file": server.get("identity_file", ""),
-                        "ssh_options": server.get("ssh_options", []),
-                    },
-                    remote_path,
-                    sync_target,
-                    delete=False,
-                    extra_excludes=extra_excludes,
-                    source_kind=source_kind,
-                )
-                logger.info("Hydrating %s:%s into %s", name, remote_path, destination)
-                code, out, err = self._run_transfer_cmd_visible(
-                    cmd,
-                    f"Importando contenido remoto {name}:{remote_path} -> {destination}",
-                )
-                after_snapshot = self._snapshot_local_path(destination)
-                error = err if code != 0 else ""
-                if code != 0 and "Permission denied (publickey)" in error:
-                    hint = "Configure `identity_file` in config/servers.json o deja una única clave privada utilizable en ~/.ssh."
-                    error = f"{error}\n{hint}"
-                empty_import = (
-                    code == 0
-                    and before_snapshot.get("entries", 0) == 0
-                    and after_snapshot.get("entries", 0) == 0
-                )
-                if empty_import:
-                    error = (
-                        "La importación remota terminó sin materializar archivos en el destino. "
-                        "Revisa la ruta origen y la clave SSH del servidor fuente."
-                    )
-                results.append({
-                    "server": name,
-                    "path": remote_path,
-                    "protocol": protocol,
-                    "success": code == 0 and not empty_import,
-                    "target": str(destination),
-                    "error": error,
-                    "output": out if code == 0 else "",
-                    "status": "empty_import" if empty_import else ("ok" if code == 0 else "failed"),
-                    "before": before_snapshot,
-                    "after": after_snapshot,
-                })
-
-        ok_count = sum(1 for item in results if item.get("success"))
-        return {
-            "success": ok_count == len(results) and len(results) > 0,
-            "message": f"Imported {ok_count}/{len(results)} remote paths",
             "results": results,
         }
 
@@ -2169,558 +1540,16 @@ class OmniCore:
         kv("Base URL", str(config.get("base_url", "unknown")), color=C.GRN)
         kv("Env Var", env_var or "none", color=C.GRN)
         kv("Secret", "loaded" if env_var and env_has_value(ENV_FILE, env_var) else "missing", color=C.GRN if env_var and env_has_value(ENV_FILE, env_var) else C.YLW)
-        kv("Activation", str(AGENT_ACTIVATION_FILE), color=C.GRN)
         if config.get("docs_url"):
             kv("Docs", str(config.get("docs_url")), color=C.GRN)
         if config.get("notes"):
             dim(str(config.get("notes")))
-        dim("  Usa `omni chat` para abrir la interfaz conversacional.")
-        nl()
-
-    def show_agent_catalog(self):
-        print_logo(compact=True)
-        section("Omni Agent Catalog")
-        for provider in provider_catalog():
-            bullet(provider.title, C.GRN)
-            dim(f"  key: {provider.key}")
-            dim(f"  protocol: {provider.protocol}")
-            dim(f"  env: {provider.env_var}")
-            dim(f"  base: {provider.base_url}")
-            dim(f"  default: {provider.default_model}")
-            dim(f"  models: {', '.join(provider.sample_models)}")
-            dim(f"  docs: {provider.docs_url}")
-            if provider.notes:
-                dim(f"  note: {provider.notes}")
-            nl()
-
-    def show_chat_status(self):
-        print_logo(compact=True)
-        section("Omni Chat")
-        config = load_agent_config(AGENT_CONFIG_FILE)
-        if not config:
-            warn("Omni Chat necesita primero una configuración de `omni agent`.")
-            hint("Usa `omni agent` para elegir proveedor y modelo.")
-            return
-
-        provider = get_provider(str(config.get("provider", "")))
-        title = provider.title if provider else str(config.get("provider_title", config.get("provider", "unknown")))
-        env_var = str(config.get("env_var", ""))
-        latest_session = latest_chat_session_path(AGENT_CHAT_DIR)
-        kv("Provider", title, color=C.GRN)
-        kv("Model", str(config.get("model", "unknown")), color=C.GRN)
-        kv("Base URL", str(config.get("base_url", "unknown")), color=C.GRN)
-        kv("Secret", "loaded" if env_var and load_env_value(ENV_FILE, env_var) else "missing", color=C.GRN if env_var and load_env_value(ENV_FILE, env_var) else C.YLW)
-        kv("Activation", str(AGENT_ACTIVATION_FILE), color=C.GRN)
-        kv("Latest Session", latest_session.name if latest_session else "none", color=C.GRN if latest_session else C.YLW)
-        if latest_session:
-            try:
-                session = load_chat_session(latest_session)
-                permissions = ensure_chat_permissions(session)
-                kv("Permissions", permissions.get("mode", "smart"), color=C.GRN)
-            except Exception:
-                kv("Permissions", "unknown", color=C.YLW)
-        if AGENT_ACTIVATION_FILE.exists():
-            activation_preview = ensure_activation_prompt(AGENT_ACTIVATION_FILE).splitlines()[0]
-            dim(f"  activation: {activation_preview}")
-        nl()
-
-    def render_chat_command_help(self):
-        box(
-            "Omni Chat Commands",
-            [
-                "/help  ver comandos del chat",
-                "/status  ver provider, modelo y sesión activa",
-                "/new  abrir una sesión limpia",
-                "/clear  limpiar el historial de la sesión actual",
-                "/save  guardar sesión en disco",
-                "/run  ejecutar el último comando sugerido por Omni",
-                "/todo  ver la última lista de tareas sugerida",
-                "/exec on|off  activar o desactivar ejecución rápida de comandos",
-                "/permissions  ver o cambiar permisos: smart|ask|auto|all",
-                "/quit  salir del chat",
-            ],
-            width=min(92, TERM_WIDTH - 4),
-            accent=C.CYN,
-        )
-
-    def resolve_chat_runtime(self) -> Dict[str, str]:
-        config = load_agent_config(AGENT_CONFIG_FILE)
-        if not config:
-            raise RuntimeError("Omni Agent no está configurado todavía.")
-
-        env_var = str(config.get("env_var", "")).strip()
-        api_key = load_env_value(ENV_FILE, env_var) if env_var else ""
-        if not api_key:
-            raise RuntimeError(f"Falta la API key en {env_var or 'la variable configurada'}")
-
-        activation_prompt = ensure_activation_prompt(AGENT_ACTIVATION_FILE)
-        workspace_lines = [
-            f"Workspace principal: {Path.home()}",
-            f"OMNI_HOME: {OMNI_HOME}",
-            f"Activation file: {AGENT_ACTIVATION_FILE}",
-        ]
-        codex_dir = Path.home() / ".codex"
-        if codex_dir.exists():
-            workspace_lines.append(f"Codex workspace disponible en {codex_dir}. Úsalo como contexto, no como proveedor principal.")
-        system_prompt = activation_prompt.strip() + "\n\nContexto del workspace:\n- " + "\n- ".join(workspace_lines)
-        return {
-            "provider": str(config.get("provider", "")),
-            "provider_title": str(config.get("provider_title", config.get("provider", "unknown"))),
-            "protocol": str(config.get("protocol", "openai-compatible")),
-            "env_var": env_var,
-            "base_url": str(config.get("base_url", "")),
-            "model": str(config.get("model", "")),
-            "api_key": api_key,
-            "system_prompt": system_prompt,
-        }
-
-    def open_chat_session(self, runtime: Dict[str, str], *, force_new: bool = False) -> Dict[str, Any]:
-        latest_path = None if force_new else latest_chat_session_path(AGENT_CHAT_DIR)
-        if latest_path and latest_path.exists():
-            try:
-                session = load_chat_session(latest_path)
-                session.setdefault("messages", [])
-                ensure_chat_permissions(session)
-                return session
-            except Exception:
-                pass
-        session = new_chat_session(
-            AGENT_CHAT_DIR,
-            provider_title=runtime["provider_title"],
-            model=runtime["model"],
-            base_url=runtime["base_url"],
-            provider_key=runtime["provider"],
-            protocol=runtime["protocol"],
-            activation_file=str(AGENT_ACTIVATION_FILE),
-        )
-        ensure_chat_permissions(session)
-        save_chat_session(Path(session["path"]), session)
-        return session
-
-    def render_assistant_message(self, text: str, *, title: str = "Omni") -> None:
-        lines = [segment.strip() for segment in text.splitlines() if segment.strip()]
-        box(title, lines or ["(sin contenido)"], width=min(94, TERM_WIDTH - 4), accent=C.GLD_BRIGHT)
-
-    def build_operator_context(self, profile: str = "") -> Dict[str, Any]:
-        try:
-            _, manifest = self.resolve_manifest("", str(Path.home()), create=True, profile=profile)
-        except Exception:
-            manifest = build_default_manifest(str(Path.home()), profile=profile or DEFAULT_PROFILE)
-        state_paths = list(manifest.get("state_paths", []))
-        has_product_state = any(
-            Path(path).expanduser().exists()
-            for path in state_paths
-            if path and not str(path).endswith("dump.pm2")
-        )
-        return {
-            "profile": str(manifest.get("profile", DEFAULT_PROFILE)),
-            "has_state_bundle": bool(latest_or_explicit(self.bundle_dir, "", "state_bundle")),
-            "has_secrets_bundle": bool(latest_or_explicit(self.bundle_dir, "", "secrets_bundle")),
-            "has_capture_summary": bool(load_capture_summary(self.bundle_dir)),
-            "has_product_state": has_product_state,
-            "migration_mode": infer_migration_mode(
-                {
-                    "has_state_bundle": bool(latest_or_explicit(self.bundle_dir, "", "state_bundle")),
-                    "has_secrets_bundle": bool(latest_or_explicit(self.bundle_dir, "", "secrets_bundle")),
-                    "has_capture_summary": bool(load_capture_summary(self.bundle_dir)),
-                    "has_product_state": has_product_state,
-                }
-            ),
-        }
-
-    def current_chat_permissions(self, session: Dict[str, Any], *, accept_all: bool = False) -> Dict[str, Any]:
-        permissions = ensure_chat_permissions(session)
-        if accept_all:
-            permissions = ensure_permissions_state({"mode": "all"})
-            session["permissions"] = permissions
-        return permissions
-
-    def render_chat_permissions(self, session: Dict[str, Any]) -> None:
-        permissions = self.current_chat_permissions(session)
-        box(
-            "Omni Permissions",
-            render_permissions_lines(permissions),
-            width=min(92, TERM_WIDTH - 4),
-            accent=C.CYN,
-        )
-
-    def render_action_hint(self, action: Dict[str, Any]) -> None:
-        if action.get("type") == "command":
-            render_action_summary(
-                action.get("title", "Comando sugerido"),
-                [
-                    f"Comando: {action.get('command', '')}",
-                    "Usa `/run` para ejecutarlo desde el chat.",
-                ],
-                accent=C.CYN,
-            )
-            return
-        if action.get("type") == "workflow":
-            steps = action.get("steps") or []
-            lines = [action.get("title", "Flujo sugerido")]
-            for idx, step in enumerate(steps, start=1):
-                if not isinstance(step, dict):
-                    continue
-                lines.append(f"{idx}. {step.get('command', '')}")
-            lines.append("Usa `/run` para ejecutarlo dentro del chat.")
-            box("Workflow sugerido", lines, width=min(94, TERM_WIDTH - 4), accent=C.CYN)
-            return
-        if action.get("type") == "todo":
-            items = action.get("items") or []
-            lines = [action.get("title", "Tareas sugeridas")] + [f"- {item}" for item in items if item]
-            box("Plan sugerido", lines, width=min(94, TERM_WIDTH - 4), accent=C.CYN)
-
-    def run_chat_action(self, action: Dict[str, Any], *, permissions: Dict[str, Any] | None = None, prompt_for_permission: bool = True) -> Dict[str, Any]:
-        action_type = str(action.get("type", "command")).strip().lower()
-        permissions_state = ensure_permissions_state(permissions)
-        decision = evaluate_permission_decision(action, permissions_state)
-
-        if prompt_for_permission and decision["needs_confirmation"]:
-            if not self.confirm_step(build_permission_prompt(action, decision), accept_all=False, default=False):
-                raise RuntimeError("Acción cancelada por permisos.")
-
-        if action_type == "workflow":
-            steps = action.get("steps") or []
-            results = []
-            for step in steps:
-                if not isinstance(step, dict):
-                    continue
-                step_action = {
-                    "type": "command",
-                    "command": step.get("command", ""),
-                    "title": step.get("title") or step.get("command") or "Paso",
-                    "confirm": False,
-                }
-                results.append(self.run_chat_action(step_action, permissions={"mode": "all"}, prompt_for_permission=False))
-            return {
-                "type": "workflow",
-                "title": action.get("title", "Workflow"),
-                "results": results,
-            }
-
-        if action_type != "command":
-            raise RuntimeError("La última acción no es ejecutable.")
-
-        command = str(action.get("command", "")).strip()
-        if not command:
-            raise RuntimeError("La última acción no contiene comando.")
-        completed = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(Path.home()),
-            text=True,
-            capture_output=True,
-            timeout=300,
-        )
-        stdout = completed.stdout.strip()
-        stderr = completed.stderr.strip()
-        lines: List[str] = [f"exit_code={completed.returncode}"]
-        if stdout:
-            lines.append("stdout:")
-            lines.extend(stdout.splitlines()[-10:])
-        if stderr:
-            lines.append("stderr:")
-            lines.extend(stderr.splitlines()[-10:])
-        render_action_summary("Resultado del comando", lines, accent=C.GRN if completed.returncode == 0 else C.RED)
-        return {
-            "type": "command",
-            "command": command,
-            "exit_code": completed.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-
-    def summarize_command_result_for_chat(self, result: Dict[str, Any]) -> str:
-        if result.get("type") == "workflow":
-            parts = [f"Resultado del flujo `{result.get('title', 'workflow')}`:"]
-            for index, item in enumerate(result.get("results", []), start=1):
-                parts.append(f"paso_{index}: `{item.get('command', '')}` exit_code={item.get('exit_code', 'unknown')}")
-            return "\n".join(parts).strip()
-
-        def _tail(text: str, label: str) -> List[str]:
-            if not text:
-                return []
-            lines = text.splitlines()[-12:]
-            return [f"{label}:"] + lines
-
-        parts = [f"Resultado del comando `{result['command']}`:", f"exit_code={result['exit_code']}"]
-        parts.extend(_tail(result.get("stdout", ""), "stdout"))
-        parts.extend(_tail(result.get("stderr", ""), "stderr"))
-        return "\n".join(parts).strip()
-
-    def chat_once(self, runtime: Dict[str, str], session: Dict[str, Any], prompt: str) -> Tuple[str, Optional[Dict[str, Any]]]:
-        operator_response = build_operator_response(prompt, context=self.build_operator_context())
-        if operator_response:
-            clean_text = operator_response.get("response", "").strip() or "Listo."
-            action = operator_response.get("action")
-            session_messages = list(session.get("messages", []))
-            session_messages.append({"role": "user", "content": prompt})
-            session_messages.append({"role": "assistant", "content": clean_text})
-            session["messages"] = session_messages
-            save_chat_session(Path(session["path"]), session)
-            return clean_text, action
-
-        session_messages = list(session.get("messages", []))
-        request_messages = [{"role": "system", "content": runtime["system_prompt"]}] + session_messages + [{"role": "user", "content": prompt}]
-        result = chat_completion(
-            protocol=runtime["protocol"],
-            base_url=runtime["base_url"],
-            model=runtime["model"],
-            api_key=runtime["api_key"],
-            messages=request_messages,
-        )
-        raw_text = result.get("text", "").strip()
-        action = parse_action_block(raw_text)
-        clean_text = clean_assistant_output(raw_text) or "No tuve texto útil para devolverte."
-        session_messages.append({"role": "user", "content": prompt})
-        session_messages.append({"role": "assistant", "content": clean_text})
-        session["messages"] = session_messages
-        save_chat_session(Path(session["path"]), session)
-        return clean_text, action
-
-    def chat_cmd(self, subaction: str = "", *, accept_all: bool = False, prompt: str = ""):
-        normalized = str(subaction or "").strip().lower()
-        if normalized in {"status", "show"}:
-            self.show_chat_status()
-            return
-
-        try:
-            runtime = self.resolve_chat_runtime()
-        except RuntimeError as err:
-            print_logo(compact=True)
-            section("Omni Chat")
-            fail(str(err))
-            hint("Usa `omni agent` para configurar proveedor/modelo y guardar la API key.")
-            return
-
-        if prompt.strip():
-            session = self.open_chat_session(runtime)
-            response, action = self.chat_once(runtime, session, prompt.strip())
-            print_logo(compact=True)
-            section("Omni Chat")
-            kv("Provider", runtime["provider_title"], color=C.GRN)
-            kv("Model", runtime["model"], color=C.GRN)
-            nl()
-            self.render_assistant_message(response)
-            if action:
-                self.render_action_hint(action)
-            return
-
-        if accept_all or not self.is_interactive():
-            print_logo(compact=True)
-            section("Omni Chat")
-            warn("Necesitas un terminal interactivo para abrir la interfaz conversacional.")
-            hint("También puedes usar `omni chat \"tu mensaje\"` para una consulta puntual.")
-            return
-
-        print_logo(compact=True)
-        section("Omni Chat")
-        kv("Provider", runtime["provider_title"], color=C.GRN)
-        kv("Model", runtime["model"], color=C.GRN)
-        kv("Base URL", runtime["base_url"], color=C.GRN)
-        kv("Activation", str(AGENT_ACTIVATION_FILE), color=C.GRN)
-        dim("Chat conversacional normal. Slash commands disponibles con /help.")
-        nl()
-
-        session = self.open_chat_session(runtime, force_new=normalized in {"new", "fresh"})
-        permissions = self.current_chat_permissions(session, accept_all=accept_all)
-        if session.get("messages"):
-            info(f"Sesión recuperada: {Path(session['path']).name}")
-            dim(f"Mensajes guardados: {len(session['messages'])}")
-        else:
-            info(f"Sesión nueva: {Path(session['path']).name}")
-
-        exec_enabled = accept_all
-        last_action: Optional[Dict[str, Any]] = None
-
-        while True:
-            try:
-                print()
-                user_input = input(q(C.PRIMARY, "  you > ")).strip()
-            except EOFError:
-                print()
-                break
-            except KeyboardInterrupt:
-                print()
-                break
-
-            if not user_input:
-                continue
-
-            if user_input.startswith("/"):
-                command = user_input[1:].strip()
-                lowered = command.lower()
-                if lowered in {"quit", "exit"}:
-                    save_chat_session(Path(session["path"]), session)
-                    ok("Sesión guardada.")
-                    break
-                if lowered == "help":
-                    self.render_chat_command_help()
-                    continue
-                if lowered == "status":
-                    self.show_chat_status()
-                    continue
-                if lowered.startswith("permissions"):
-                    remainder = command.split(" ", 1)[1].strip() if " " in command else ""
-                    parsed = parse_permissions_request(remainder)
-                    if parsed["action"] == "show":
-                        self.render_chat_permissions(session)
-                    elif parsed["action"] == "set":
-                        session["permissions"] = ensure_permissions_state({"mode": parsed["mode"]})
-                        permissions = self.current_chat_permissions(session)
-                        save_chat_session(Path(session["path"]), session)
-                        ok(f"Permisos del chat actualizados a `{permissions['mode']}`.")
-                        self.render_chat_permissions(session)
-                    else:
-                        warn("Modo inválido. Usa: /permissions smart|ask|auto|all")
-                    continue
-                if lowered == "new":
-                    session = self.open_chat_session(runtime, force_new=True)
-                    permissions = self.current_chat_permissions(session, accept_all=accept_all)
-                    last_action = None
-                    info(f"Sesión nueva: {Path(session['path']).name}")
-                    continue
-                if lowered == "clear":
-                    session["messages"] = []
-                    save_chat_session(Path(session["path"]), session)
-                    last_action = None
-                    ok("Historial limpiado para esta sesión.")
-                    continue
-                if lowered == "save":
-                    save_chat_session(Path(session["path"]), session)
-                    ok(f"Sesión guardada en {session['path']}")
-                    continue
-                if lowered.startswith("exec "):
-                    toggle = lowered.split(" ", 1)[1].strip()
-                    exec_enabled = toggle in {"on", "true", "1", "yes", "si"}
-                    ok(f"Ejecución rápida {'activada' if exec_enabled else 'desactivada'}.")
-                    continue
-                if lowered == "run":
-                    if not last_action:
-                        warn("No hay comando sugerido listo para ejecutar.")
-                        continue
-                    try:
-                        result = self.run_chat_action(last_action, permissions=permissions, prompt_for_permission=True)
-                    except Exception as err:
-                        fail(str(err))
-                        continue
-                    session["messages"].append(
-                        {
-                            "role": "user",
-                            "content": self.summarize_command_result_for_chat(result),
-                        }
-                    )
-                    save_chat_session(Path(session["path"]), session)
-                    continue
-                if lowered == "todo":
-                    if not last_action or last_action.get("type") != "todo":
-                        warn("No hay lista de tareas sugerida en memoria.")
-                        continue
-                    self.render_action_hint(last_action)
-                    continue
-                warn(f"Comando desconocido: /{command}")
-                continue
-
-            with Spinner("Pensando...", color=C.PRIMARY):
-                try:
-                    response, action = self.chat_once(runtime, session, user_input)
-                except Exception as err:
-                    print()
-                    fail(f"Omni Chat falló: {err}")
-                    continue
-
-            self.render_assistant_message(response)
-            last_action = action
-            if action:
-                self.render_action_hint(action)
-                decision = evaluate_permission_decision(action, permissions)
-                if exec_enabled and action.get("type") in {"command", "workflow"} and decision["auto_execute"] and not decision["needs_confirmation"]:
-                    try:
-                        result = self.run_chat_action(action, permissions=permissions, prompt_for_permission=False)
-                        session["messages"].append(
-                            {
-                                "role": "user",
-                                "content": self.summarize_command_result_for_chat(result),
-                            }
-                        )
-                        save_chat_session(Path(session["path"]), session)
-                    except Exception as err:
-                        fail(str(err))
-
-    def show_examples(self):
-        print_logo(tagline=True)
-        section("Omni Playbooks")
-        for example in build_examples_catalog():
-            bullet(example.title, C.GRN)
-            dim(example.description)
-            dim(f"  Cuándo usarlo: {example.when_to_use}")
-            print()
-            print("  " + q(C.PRIMARY, example.command))
-            nl()
-
-    def show_auto_status(
-        self,
-        *,
-        powershell: bool = False,
-        target_host: str = "",
-        remote_user: str = DEFAULT_REMOTE_USER,
-        identity_file: str = "",
-        repo_url: str = DEFAULT_REPO_URL,
-        ref_name: str = DEFAULT_REF_NAME,
-        destination: str = "",
-        ps1_out: str = "",
-        windows_dir: str = "",
-    ):
-        print_logo(compact=True)
-        section("Omni Auto")
-        kv("Timer service", "omni-update.timer", color=C.GRN)
-        kv("Watch service", "omni-watch.service", color=C.GRN)
-        kv("Auto backup", "on change + every 24h", color=C.GRN)
-        nl()
-        if powershell:
-            command = build_powershell_auto_command(
-                target_host=target_host,
-                remote_user=remote_user,
-                identity_file=identity_file,
-                repo_url=repo_url,
-                ref_name=ref_name,
-                destination=destination,
-                install_timer=True,
-            )
-            info("Comando listo para PowerShell")
-            dim("Si omites -Destination, bootstrap.ps1 escanea el host remoto y recomienda la ruta.")
-            if ps1_out:
-                output_path = Path(ps1_out).expanduser()
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text(build_powershell_auto_script(command), encoding="utf-8")
-                ok(f"Script PowerShell generado en {output_path}")
-            if windows_dir.strip():
-                kv("Windows dir", windows_dir, color=C.GRN)
-                kv("Suggested .ps1", build_windows_ps1_path(windows_dir), color=C.GRN)
-            print()
-            print(q(C.PRIMARY, command))
-            if windows_dir.strip():
-                print()
-                info("Bloque listo para crear el .ps1 en Windows")
-                print()
-                print(q(C.PRIMARY, build_powershell_dropper_script(command, windows_dir=windows_dir)))
-            nl()
-            return
-
-        bullet("Playbooks guiados  -> omni examples", C.GRN)
-        bullet("One-liner PowerShell -> omni auto --p", C.GRN)
-        dim("Añade --target-host y --identity-file si quieres que salga listo para pegar.")
-        dim("Añade --ps1-out ruta.ps1 si además quieres el archivo PowerShell generado.")
-        dim("Añade --windows-dir C:\\ruta\\carpeta para que Omni te dé el bloque que crea omni-auto.ps1 en Windows.")
         nl()
 
     def agent_cmd(self, subaction: str = "", *, accept_all: bool = False):
         normalized = str(subaction or "").strip().lower()
         if normalized in {"status", "show"}:
             self.show_agent_status()
-            return
-        if normalized in {"list", "catalog", "providers"}:
-            self.show_agent_catalog()
             return
 
         print_logo(compact=True)
@@ -2734,58 +1563,34 @@ class OmniCore:
             kv("Base URL", str(current.get("base_url", "unknown")), color=C.GRN)
             nl()
 
-        if accept_all or not self.is_interactive():
-            warn("Omni Agent necesita un terminal interactivo para configurarse.")
-            if current:
-                hint("Mostrando configuración actual en vez de modificarla.")
-                self.show_agent_status()
-            else:
-                hint("Usa `omni agent` desde una terminal interactiva para elegir proveedor y guardar claves.")
-            return
-
         providers = provider_catalog()
         default_idx = 0
         if current:
             default_idx = next((idx for idx, item in enumerate(providers) if item.key == current.get("provider")), 0)
-        provider_icons = {
-            "claude-direct": "🟠",
-            "openai-direct": "🟢",
-            "azure-openai": "🔷",
-            "gemini-direct": "✨",
-            "gemini-openai": "🔁",
-            "openrouter": "🌐",
-            "aws-bedrock": "🟤",
-            "xai-direct": "⚡",
-            "groq": "🚀",
-            "qwen-intl": "🈶",
-            "deepseek-direct": "🧭",
-            "mistral-direct": "🌬️",
-            "cohere-direct": "🧩",
-            "together": "🤝",
-            "perplexity": "🔎",
-            "custom-openai": "🛠️",
-        }
 
-        selected = select_menu(
-            [item.title for item in providers],
-            title="¿Qué proveedor quieres usar para Omni Agent?",
-            descriptions=[item.description for item in providers],
-            icons=[provider_icons.get(item.key, "•") for item in providers],
-            default=default_idx,
-            show_index=True,
-            footer="↑/↓ elegir proveedor · Enter confirmar · número salto directo",
-        )
+        if accept_all or not self.is_interactive():
+            selected = default_idx
+        else:
+            selected = select_menu(
+                [item.title for item in providers],
+                title="¿Qué proveedor quieres usar para Omni Agent?",
+                descriptions=[item.description for item in providers],
+                icons=["🧠", "✨", "🔁", "🌐", "🈶", "🛠️"],
+                default=default_idx,
+                show_index=True,
+                footer="↑/↓ elegir proveedor · Enter confirmar · número salto directo",
+            )
 
         provider = providers[selected]
         base_url = provider.base_url
         env_var = provider.env_var
 
         if provider.requires_custom_base_url and self.is_interactive():
-            raw_base = prompt_paste_friendly_value("Base URL", provider.base_url)
+            raw_base = input(f"Base URL [{provider.base_url}]: ").strip()
             if raw_base:
                 base_url = raw_base
         if provider.requires_custom_env_var and self.is_interactive():
-            raw_env = prompt_paste_friendly_value("Variable para API key", provider.env_var, uppercase=True)
+            raw_env = input(f"Variable para API key [{provider.env_var}]: ").strip().upper()
             if raw_env:
                 env_var = raw_env
 
@@ -2793,29 +1598,32 @@ class OmniCore:
         model_default_idx = 0
         if current and current.get("provider") == provider.key and current.get("model") in model_choices:
             model_default_idx = model_choices.index(str(current.get("model")))
-        model_idx = select_menu(
-            model_choices,
-            title=f"Modelo por defecto para {provider.title}",
-            descriptions=[
-                "Modelo recomendado para empezar." if choice == provider.default_model else (
-                    "Escribe tu modelo exacto a mano." if choice == "Custom" else "Opción disponible."
-                )
-                for choice in model_choices
-            ],
-            icons=["•"] * len(model_choices),
-            default=model_default_idx,
-            show_index=True,
-            footer="↑/↓ elegir modelo · Enter confirmar · número salto directo",
-        )
-        if model_choices[model_idx] == "Custom":
-            custom_model = prompt_paste_friendly_value("Modelo personalizado", provider.default_model)
-            model = custom_model or provider.default_model
+        if accept_all or not self.is_interactive():
+            model = current.get("model") if current.get("provider") == provider.key and current.get("model") else provider.default_model
         else:
-            model = model_choices[model_idx]
+            model_idx = select_menu(
+                model_choices,
+                title=f"Modelo por defecto para {provider.title}",
+                descriptions=[
+                    "Modelo recomendado para empezar." if choice == provider.default_model else (
+                        "Escribe tu modelo exacto a mano." if choice == "Custom" else "Opción disponible."
+                    )
+                    for choice in model_choices
+                ],
+                icons=["•"] * len(model_choices),
+                default=model_default_idx,
+                show_index=True,
+                footer="↑/↓ elegir modelo · Enter confirmar · número salto directo",
+            )
+            if model_choices[model_idx] == "Custom":
+                custom_model = input(f"Modelo personalizado [{provider.default_model}]: ").strip()
+                model = custom_model or provider.default_model
+            else:
+                model = model_choices[model_idx]
 
         wrote_secret = False
         if self.is_interactive():
-            raw_key = prompt_paste_friendly_secret(f"API key para {provider.title} (Enter para omitir)")
+            raw_key = getpass.getpass(f"API key para {provider.title} (Enter para omitir): ").strip()
             if raw_key:
                 upsert_env_value(ENV_FILE, env_var, raw_key)
                 os.environ[env_var] = raw_key
@@ -2844,7 +1652,6 @@ class OmniCore:
                 f"Base URL: {base_url}",
                 f"Secret: {'guardado en .env' if wrote_secret else ('ya presente' if env_has_value(ENV_FILE, env_var) else 'pendiente')}",
                 f"Docs: {provider.docs_url}",
-                "Chat: omni chat",
             ],
             accent=C.PRIMARY,
         )
@@ -2861,15 +1668,7 @@ class OmniCore:
         bullet("Crear respaldo real  -> omni capture --profile full-home", C.GRN)
         dim("Luego saca `backups/host-bundles` fuera del host actual.")
         bullet("Configurar Omni Agent  -> omni agent", C.GRN)
-        dim("Selector visual para Claude, OpenAI, Azure OpenAI, Gemini, Bedrock, OpenRouter, xAI, Groq, Qwen, DeepSeek, Mistral, Cohere, Together, Perplexity o endpoint compatible.")
-        bullet("Hablar con Omni Agent  -> omni chat", C.GRN)
-        dim("Interfaz conversacional con historial, slash commands, `/permissions` y acciones operativas.")
-        bullet("Ver playbooks listos  -> omni examples", C.GRN)
-        dim("Comandos listos para captura, migración, bridge, rewrite, agent y chat.")
-        bullet("Inventario del stack  -> omni packages", C.GRN)
-        dim("Enumera APT, Python, npm global y PM2 del host actual.")
-        bullet("One-liner PowerShell  -> omni auto --p", C.GRN)
-        dim("Imprime el comando de auto-actualización listo para pegar en PowerShell.")
+        dim("Selector visual para Claude, Gemini, OpenRouter, Qwen o endpoint compatible.")
         nl()
 
         section("Omni Core - Command Reference")
@@ -2885,8 +1684,9 @@ class OmniCore:
         bullet("omni capture   - Build a full recovery pack from the active profile", C.GRN)
         bullet("omni restore   - Restore from latest bundle + secrets", C.GRN)
         bullet("omni migrate   - Rebuild this host end to end", C.GRN)
-        bullet("omni recover-apps-ips - Reinstall apps/runtime from an already copied home", C.GRN)
-        bullet("omni commands  - Show the full Omni command surface", C.GRN)
+        bullet("omni briefcase - Build the portable migration contract", C.GRN)
+        bullet("omni restore-plan - Derive the target-side restore sequence", C.GRN)
+        bullet("omni migrate sync - Use the new migration family around the briefcase contract", C.GRN)
         nl()
 
         print("  " + q(C.W, "ADVANCED COMMANDS", bold=True))
@@ -2905,7 +1705,9 @@ class OmniCore:
         dim("    Use `omni init --profile full-home` for a full /home/ubuntu capture")
         bullet("omni sync      - Pull snapshots from configured servers", C.PRIMARY)
         bullet("omni inventory - Classify host state vs. secrets vs. noise", C.PRIMARY)
-        bullet("omni packages  - Capture the installed host stack (APT/Python/npm/PM2)", C.PRIMARY)
+        bullet("omni briefcase - Export portable migration metadata", C.PRIMARY)
+        bullet("omni restore-plan - Preview restore blocks for this target host", C.PRIMARY)
+        bullet("omni migrate sync - New public surface for create/plan/capture/restore", C.PRIMARY)
         bullet("omni bundle-create - Export state bundle from the active profile", C.PRIMARY)
         bullet("omni bundle-restore - Restore latest or explicit state bundle", C.PRIMARY)
         bullet("omni secrets-export - Export encrypted secrets pack", C.PRIMARY)
@@ -2914,11 +1716,6 @@ class OmniCore:
         bullet("omni detect-ip - Detect current host identity", C.PRIMARY)
         bullet("omni rewrite-ip - Rewrite old host references safely", C.PRIMARY)
         bullet("omni agent     - Configure Omni Agent provider and model", C.PRIMARY)
-        dim("    Use `omni agent list` to inspect the full provider/model catalog")
-        bullet("omni chat      - Open a conversational terminal with Omni Agent", C.PRIMARY)
-        dim("    También soporta `omni chat \"tu mensaje\"` y `/permissions smart|ask|auto|all`")
-        bullet("omni examples  - Show ready-to-copy operational playbooks", C.PRIMARY)
-        bullet("omni auto      - Show automation status or emit PowerShell auto-update command", C.PRIMARY)
         bullet("omni bridge    - Create/send/receive migration packs", C.PRIMARY)
         bullet("omni timer-install - Install daily timer + change watcher service", C.PRIMARY)
         bullet("omni purge - Delete transferred state and repo artifacts to free disk", C.PRIMARY)
@@ -2976,7 +1773,6 @@ class OmniCore:
             (CONFIG_DIR / "repos.json", CONFIG_DIR / "repos.example.json"),
             (CONFIG_DIR / "servers.json", CONFIG_DIR / "servers.example.json"),
             (CONFIG_DIR / "system_manifest.json", CONFIG_DIR / "system_manifest.example.json"),
-            (AGENT_ACTIVATION_FILE, CONFIG_DIR / "omni_agent_activation.example.txt"),
         ]
 
         created: List[Path] = []
@@ -3101,7 +1897,7 @@ class OmniCore:
         else:
             recommended_idx = next((idx for idx, option in enumerate(flow_options) if option.recommended), 0)
             labels = [option.title for option in flow_options]
-            icons = ["🛫", "📦", "♻️", "🚚", "🩺", "🧠", "💬", "⚙️"]
+            icons = ["🛫", "📦", "♻️", "🚚", "🩺", "🧠", "⚙️"]
             descriptions = []
             for option in flow_options:
                 suffix = " Recomendado en este host." if option.recommended else ""
@@ -3144,9 +1940,6 @@ class OmniCore:
         if chosen_flow == "agent":
             self.agent_cmd(accept_all=effective_accept_all)
             return
-        if chosen_flow == "chat":
-            self.chat_cmd(accept_all=effective_accept_all)
-            return
         self.show_help()
 
     def show_doctor(self):
@@ -3179,15 +1972,13 @@ class OmniCore:
         kv("Bundle Dir", str(self.bundle_dir), color=C.GRN)
         nl()
 
-        bundle_dirs = self.bundle_search_dirs()
-        latest_state_bundle = resolve_latest_bundle_across_dirs(bundle_dirs, "", "state_bundle")
-        latest_secrets_bundle = resolve_latest_bundle_across_dirs(bundle_dirs, "", "secrets_bundle")
-        if latest_state_bundle:
-            kv("Latest State Bundle", str(latest_state_bundle), color=C.GRN)
+        bundle_summary = summarize_bundle_pair(bundle_dir=self.bundle_dir)
+        if bundle_summary.get("state_bundle"):
+            kv("Latest State Bundle", str(bundle_summary["state_bundle"]["path"]), color=C.GRN)
         else:
             warn("No state bundle found yet. Run `omni capture`.")
-        if latest_secrets_bundle:
-            kv("Latest Secrets Bundle", str(latest_secrets_bundle), color=C.GRN)
+        if bundle_summary.get("secrets_bundle"):
+            kv("Latest Secrets Bundle", str(bundle_summary["secrets_bundle"]["path"]), color=C.GRN)
         else:
             warn("No secrets bundle found yet. Run `omni capture`.")
         nl()
@@ -3211,34 +2002,16 @@ class OmniCore:
         target_hostname: str = "",
     ) -> Dict[str, Any]:
         scan_root = Path(root).expanduser() if root else Path.home()
-        current_identity = detect_host_identity()
-        context = None
-        source_bundle_dir = self.bundle_dir
-        for bundle_dir in self.bundle_search_dirs():
-            candidate = build_host_rewrite_context(
-                bundle_dir,
-                target_public_ip=target_public_ip,
-                target_private_ip=target_private_ip,
-                target_hostname=target_hostname,
-            )
-            if candidate.get("summary_found"):
-                context = candidate
-                source_bundle_dir = bundle_dir
-                break
-            if context is None:
-                context = candidate
-        context = context or build_host_rewrite_context(
+        context = build_host_rewrite_context(
             self.bundle_dir,
             target_public_ip=target_public_ip,
             target_private_ip=target_private_ip,
             target_hostname=target_hostname,
         )
-        context = enrich_rewrite_context_from_servers(context, self.servers, current_identity)
         plan = build_rewrite_plan(scan_root, context["replacements"]) if context["replacements"] else None
         return {
             "scan_root": str(scan_root),
             "context": context,
-            "bundle_dir": str(source_bundle_dir),
             "plan": plan,
             "changed_files": plan.changed_files if plan else 0,
             "total_replacements": plan.total_replacements if plan else 0,
@@ -3319,11 +2092,8 @@ class OmniCore:
         state_bundle = pack["state_bundle"]
         secrets_bundle = pack["secrets_bundle"]
         summary_path = pack["summary_path"]
-        installed_inventory_path = pack["installed_inventory_path"]
-        installed_inventory = pack["installed_inventory"]
         ok(f"State bundle created: {state_bundle}")
         ok(f"Secrets bundle created: {secrets_bundle}")
-        ok(f"Installed inventory written: {installed_inventory_path}")
         ok(f"Capture summary written: {summary_path}")
         if not pack["encrypted"]:
             warn("No passphrase configured. Secrets bundle was exported without encryption.")
@@ -3334,11 +2104,9 @@ class OmniCore:
                 f"Perfil activo: {manifest.get('profile', DEFAULT_PROFILE)}",
                 f"Bundle de estado: {state_bundle}",
                 f"Bundle de secretos: {secrets_bundle}",
-                f"Inventario instalado: {installed_inventory_path}",
                 f"Resumen: {summary_path}",
                 f"Directorio: {bundle_dir}",
             ]
-            summary_lines.extend([""] + summarize_installed_inventory(installed_inventory))
             if not passphrase:
                 summary_lines.append("Atención: el bundle de secretos quedó sin cifrar.")
             summary_lines.extend(
@@ -3369,70 +2137,27 @@ class OmniCore:
         show_summary: bool = True,
         auto_backup: bool = True,
         before_services=None,
-        allow_missing_bundles: bool = False,
-        recover_apps_ips: bool = False,
     ):
         print_logo(compact=True)
         section("Restore Host")
         self.init_workspace(profile=profile)
         selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile)
         passphrase = self.read_passphrase(passphrase_env)
-        bundle_dirs = self.bundle_search_dirs(include_auto=False)
-        resolved_bundle_path = resolve_latest_bundle_across_dirs(bundle_dirs, bundle_path, "state_bundle")
-        resolved_secrets_path = resolve_latest_bundle_across_dirs(bundle_dirs, secrets_path, "secrets_bundle")
-        resolved_bundle = str(resolved_bundle_path or "")
-        resolved_secrets = str(resolved_secrets_path or "")
-        runtime_inventory = resolve_installed_inventory_across_dirs(self.bundle_search_dirs())
-        effective_manifest = merge_manifest_runtime_inventory(manifest, runtime_inventory)
-        bootstrap_only = False
-        hydration_result = None
-        local_runtime = discover_local_runtime_paths(str(manifest.get("host_root") or Path.home()))
-        if recover_apps_ips or local_runtime.get("ready"):
-            effective_manifest = merge_manifest_local_runtime_paths(effective_manifest, local_runtime)
+        resolved_bundle = str(latest_or_explicit(self.bundle_dir, bundle_path, "state_bundle") or "")
+        resolved_secrets = str(latest_or_explicit(self.bundle_dir, secrets_path, "secrets_bundle") or "")
 
-        if not resolved_bundle or not resolved_secrets:
-            if not allow_missing_bundles:
-                if not resolved_bundle:
-                    fail("State bundle not found. Run `omni capture` or pass --bundle.")
-                if not resolved_secrets:
-                    fail("Secrets bundle not found. Run `omni capture` or pass --secrets.")
-                return {"success": False, "reason": "missing_bundle"}
-            bootstrap_only = True
-            warn("No bundle set found. Continuing in bootstrap mode from manifest and installed inventory only.")
-            resolved_bundle = ""
-            resolved_secrets = ""
+        if not resolved_bundle:
+            fail("State bundle not found. Run `omni capture` or pass --bundle.")
+            return
+        if not resolved_secrets:
+            fail("Secrets bundle not found. Run `omni capture` or pass --secrets.")
+            return
         if not self.confirm_step("Restore and reconcile this host now?", accept_all=accept_all):
             warn("Restore cancelled.")
-            return {"success": False, "reason": "cancelled"}
-
-        if bootstrap_only:
-            if recover_apps_ips:
-                info("Recover apps & IPs activo: se omite hidratación remota y se usará el contenido local existente.")
-                hydration_result = {
-                    "success": True,
-                    "source": "local_recover_apps_ips",
-                    "message": "Using local home content only for app/package recovery and IP rewrite.",
-                    "results": [],
-                }
-            elif local_runtime.get("ready"):
-                info("Contenido local detectado en /home/ubuntu: se omite hidratación remota y se usará el home ya copiado.")
-                hydration_result = {
-                    "success": True,
-                    "source": "local_home",
-                    "message": "Using existing local home content.",
-                    "results": [],
-                }
-            elif self.has_ready_remote_source(manifest):
-                hydration_result = self.hydrate_from_remote_servers(target_root=target_root, manifest=manifest)
-                if hydration_result.get("success"):
-                    ok(hydration_result.get("message", "Remote content imported"))
-                else:
-                    warn(hydration_result.get("message", "Remote content import was incomplete"))
-            else:
-                warn("Bootstrap mode sin fuente remota real: Omni instalará runtime, pero no puede poblar /home/ubuntu completo sin bundle o servidor origen.")
+            return
 
         report = reconcile_host(
-            effective_manifest,
+            manifest,
             bundle_path=resolved_bundle,
             secrets_path=resolved_secrets,
             passphrase=passphrase,
@@ -3463,11 +2188,8 @@ class OmniCore:
             pm2_step = step_map.get("pm2", {})
             summary_lines = [
                 f"Perfil activo: {manifest.get('profile', DEFAULT_PROFILE)}",
-                f"Modo: {'bootstrap' if bootstrap_only else 'bundle-restore'}",
-                f"Contenido remoto importado: {sum(1 for item in (hydration_result or {}).get('results', []) if item.get('success'))}" if hydration_result else "Contenido remoto importado: 0",
                 f"Archivos de estado restaurados: {restore_state.get('restored', 0)}",
                 f"Archivos de secretos restaurados: {restore_secrets.get('restored', 0)}",
-                f"Inventario instalado: {'detectado' if runtime_inventory else 'no'}",
                 f"Proyectos Compose levantados: {compose_started}",
                 f"PM2: {pm2_step.get('status', 'sin estado')}",
                 f"Timer diario: {'instalado' if timer_installed else 'pendiente'}",
@@ -3480,15 +2202,6 @@ class OmniCore:
             render_action_summary("Restore completo", summary_lines, accent=C.GRN)
         else:
             self.write_json_output(report)
-        return {
-            "success": True,
-            "report": report,
-            "bootstrap_only": bootstrap_only,
-            "used_bundles": bool(resolved_bundle and resolved_secrets),
-            "runtime_inventory": runtime_inventory,
-            "hydration_result": hydration_result,
-            "local_runtime": local_runtime,
-        }
 
     def detect_ip_cmd(self):
         print_logo(compact=True)
@@ -3577,7 +2290,6 @@ class OmniCore:
         on_calendar: str = "daily",
         apply_rewrite: bool = True,
         profile: str = "",
-        recover_apps_ips: bool = False,
     ):
         print_logo(compact=True)
         section("Migrate Host")
@@ -3614,7 +2326,7 @@ class OmniCore:
                 "replacements": drift["total_replacements"],
             }
 
-        restore_result = self.restore_host_cmd(
+        self.restore_host_cmd(
             manifest_path=manifest_path,
             home_root=home_root,
             bundle_path=bundle_path,
@@ -3628,11 +2340,7 @@ class OmniCore:
             show_summary=False,
             auto_backup=False,
             before_services=before_services_hook,
-            allow_missing_bundles=True,
-            recover_apps_ips=recover_apps_ips,
         )
-        if not restore_result or not restore_result.get("success"):
-            return
         if AUTO_BACKUP_ON_CHANGE:
             info("Creando backup automático post-migrate...")
             self.run_backup(
@@ -3645,7 +2353,6 @@ class OmniCore:
         if self.is_interactive():
             lines = [
                 f"Plataforma detectada: {info_obj.system} / {info_obj.shell}",
-                f"Modo de migracion: {'bootstrap' if restore_result.get('bootstrap_only') else 'bundle-restore'}",
                 f"Reescritura de referencias: {rewrite_status}",
                 f"Archivos corregidos: {rewrite_files}",
                 "",
@@ -3780,48 +2487,141 @@ class OmniCore:
             }
             self.write_json_output(payload, output)
 
-    def show_packages(self, output: str = ""):
+    def show_briefcase(self, manifest_path: str = "", home_root: str = "", output: str = "", profile: str = ""):
         print_logo(compact=True)
-        section("Installed Stack")
-        runtime_inventory = capture_installed_inventory()
+        section("Portable Briefcase")
+        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile)
+        report = scan_home(home_root or manifest.get("host_root") or str(Path.home()), manifest)
+        briefcase = build_briefcase_manifest(
+            manifest,
+            detect_platform_info(),
+            inventory_report=report,
+        )
 
-        kv("APT packages", str(len(runtime_inventory.get("apt_packages", []))), color=C.GRN)
-        kv("Python packages", str(len(runtime_inventory.get("python_packages", []))), color=C.GRN)
-        kv("npm global", str(len(runtime_inventory.get("npm_global_packages", []))), color=C.GRN)
-        kv("PM2 processes", str(len(runtime_inventory.get("pm2_processes", []))), color=C.GRN)
+        summary = briefcase["inventory"]["summary"]
+        kv("Manifest", str(selected_path))
+        kv("Profile", str(briefcase["source"]["profile"]), color=C.GRN)
+        kv("Source System", str(briefcase["source"]["platform"].get("system", "unknown")), color=C.GRN)
+        kv("Package Manager", str(briefcase["source"]["platform"].get("package_manager", "unknown")), color=C.GRN)
+        kv("State Paths", str(summary["included_state_count"]), color=C.GRN)
+        kv("Secret Paths", str(summary["included_secret_count"]), color=C.YLW if summary["included_secret_count"] else C.GRN)
+        kv("Products", str(summary["discovered_product_count"]), color=C.GRN)
+        kv("Noise", str(summary["discovered_noise_count"]), color=C.YLW if summary["discovered_noise_count"] else C.GRN)
         nl()
-
-        for line in summarize_installed_inventory(runtime_inventory):
-            bullet(line, C.GRN)
-
-        apt_preview = runtime_inventory.get("apt_packages", [])[:12]
-        python_preview = runtime_inventory.get("python_packages", [])[:12]
-        npm_preview = runtime_inventory.get("npm_global_packages", [])[:12]
-        pm2_preview = runtime_inventory.get("pm2_processes", [])[:8]
-
-        if apt_preview:
-            nl()
-            section("APT Preview")
-            for item in apt_preview:
-                bullet(item, C.PRIMARY)
-        if python_preview:
-            nl()
-            section("Python Preview")
-            for item in python_preview:
-                bullet(item, C.PRIMARY)
-        if npm_preview:
-            nl()
-            section("npm Global Preview")
-            for item in npm_preview:
-                bullet(item, C.PRIMARY)
-        if pm2_preview:
-            nl()
-            section("PM2 Preview")
-            for item in pm2_preview:
-                bullet(f"{item.get('name', 'unknown')} [{item.get('status', 'unknown')}]", C.PRIMARY)
+        hint("GitHub queda como metadata/control plane. El payload real debe viajar por SSH/SFTP/rsync.")
 
         if output:
-            self.write_json_output(runtime_inventory, output)
+            self.write_json_output(briefcase, output)
+            return
+        print(json.dumps(briefcase, indent=2, ensure_ascii=False))
+
+    def show_restore_plan(
+        self,
+        manifest_path: str = "",
+        home_root: str = "",
+        output: str = "",
+        profile: str = "",
+        briefcase_path: str = "",
+    ):
+        print_logo(compact=True)
+        section("Restore Plan")
+
+        if briefcase_path:
+            source_briefcase = json.loads(Path(briefcase_path).expanduser().read_text(encoding="utf-8"))
+            selected_path = Path(briefcase_path).expanduser()
+        else:
+            selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile)
+            report = scan_home(home_root or manifest.get("host_root") or str(Path.home()), manifest)
+            source_briefcase = build_briefcase_manifest(
+                manifest,
+                detect_platform_info(),
+                inventory_report=report,
+            )
+
+        plan = build_restore_plan(source_briefcase, detect_platform_info())
+        kv("Source", str(plan["source"]["platform"].get("system", "unknown")), color=C.GRN)
+        kv("Target", str(plan["target"].get("system", "unknown")), color=C.GRN)
+        kv("Cross Platform", "yes" if plan["cross_platform"] else "no", color=C.YLW if plan["cross_platform"] else C.GRN)
+        kv("Reference", str(selected_path))
+        nl()
+
+        for step in plan["steps"]:
+            status = str(step.get("status", "unknown"))
+            color = C.GRN if status == "applicable" else C.YLW if status == "manual" else C.G3
+            kv(step["id"], f"{status} :: {step['title']}", color=color, key_width=22)
+
+        if plan["capability_gaps"]:
+            nl()
+            section("Capability Gaps")
+            for gap in plan["capability_gaps"]:
+                warn(gap)
+
+        if output:
+            self.write_json_output(plan, output)
+            return
+        print(json.dumps(plan, indent=2, ensure_ascii=False))
+
+    def migrate_sync_cmd(
+        self,
+        subaction: str = "",
+        *,
+        manifest_path: str = "",
+        home_root: str = "",
+        output: str = "",
+        passphrase_env: str = "OMNI_SECRET_PASSPHRASE",
+        profile: str = "",
+        briefcase_path: str = "",
+        accept_all: bool = False,
+        target_root: str = "/",
+        on_calendar: str = "daily",
+    ):
+        normalized = (subaction or "").strip().lower()
+        if normalized in {"", "help"}:
+            render_action_summary(
+                "Omni Migrate Sync",
+                [
+                    "$ omni migrate sync create   # export portable briefcase metadata",
+                    "$ omni migrate sync plan     # derive the target restore plan",
+                    "$ omni migrate sync capture  # create state + secrets recovery pack",
+                    "$ omni migrate sync restore  # restore from latest bundle + secrets",
+                ],
+                accent=C.PRIMARY,
+            )
+            return
+
+        if normalized in {"create", "briefcase"}:
+            self.show_briefcase(manifest_path, home_root, output, profile=profile)
+            return
+        if normalized in {"plan", "restore-plan"}:
+            self.show_restore_plan(manifest_path, home_root, output, profile=profile, briefcase_path=briefcase_path)
+            return
+        if normalized == "capture":
+            self.capture_host_cmd(
+                manifest_path,
+                home_root,
+                output,
+                passphrase_env,
+                accept_all=accept_all,
+                profile=profile,
+            )
+            return
+        if normalized == "restore":
+            self.restore_host_cmd(
+                manifest_path=manifest_path,
+                home_root=home_root,
+                bundle_path="",
+                secrets_path="",
+                target_root=target_root,
+                passphrase_env=passphrase_env,
+                accept_all=accept_all,
+                install_timer=accept_all,
+                on_calendar=on_calendar,
+                profile=profile,
+            )
+            return
+
+        fail(f"Unknown migrate sync action: {subaction}")
+        hint("Use: omni migrate sync [create|plan|capture|restore]")
 
     def create_state_bundle_cmd(self, manifest_path: str = "", home_root: str = "", output: str = "", profile: str = ""):
         print_logo(compact=True)
@@ -4177,7 +2977,7 @@ logging.basicConfig(
 logger = logging.getLogger("omni.core")
 
 def main():
-    parser = argparse.ArgumentParser(description="Omni Core - The Supreme Coordinator", add_help=False, allow_abbrev=False)
+    parser = argparse.ArgumentParser(description="Omni Core - The Supreme Coordinator", add_help=False)
     parser.add_argument("action", nargs="?", default="start", help="Action to perform")
     parser.add_argument("--interval", type=int, default=300, help="Interval for watch mode (seconds)")
     parser.add_argument("--lines", type=int, default=50, help="Number of log lines")
@@ -4205,19 +3005,11 @@ def main():
     parser.add_argument("--target-public-ip", type=str, default="", help="Target public IP for rewrite/migrate")
     parser.add_argument("--target-private-ip", type=str, default="", help="Target private IP for rewrite/migrate")
     parser.add_argument("--target-hostname", type=str, default="", help="Target hostname/FQDN for rewrite/migrate")
-    parser.add_argument("--target-host", type=str, default="", help="Remote host for generated PowerShell auto commands")
-    parser.add_argument("--remote-user", type=str, default=DEFAULT_REMOTE_USER, help="Remote SSH user for generated PowerShell auto commands")
-    parser.add_argument("--identity-file", type=str, default="", help="Identity file for generated PowerShell auto commands")
-    parser.add_argument("--repo-url", type=str, default=DEFAULT_REPO_URL, help="Repository URL for generated PowerShell auto commands")
-    parser.add_argument("--ref-name", type=str, default=DEFAULT_REF_NAME, help="Git branch/ref for generated PowerShell auto commands")
-    parser.add_argument("--ps1-out", type=str, default="", help="Write generated PowerShell auto command to a .ps1 file")
-    parser.add_argument("--windows-dir", type=str, default="", help="Windows directory where omni-auto.ps1 should be created")
     parser.add_argument("--context-lines", type=int, default=2, help="Context lines for rewrite previews")
     parser.add_argument("--apply", action="store_true", help="Apply changes for rewrite-style commands")
-    parser.add_argument("--powershell", "--p", "-p", action="store_true", help="Render PowerShell-oriented output where supported")
     parser.add_argument("--skip-rewrite", action="store_true", help="Skip automatic host reference rewrite during migrate")
-    parser.add_argument("--recover-apps-ips", action="store_true", help="Do not restore or hydrate folders; use existing local home content to recover apps, packages and IP rewrites")
     parser.add_argument("--dest", type=str, default="", help="Remote destination for bridge send")
+    parser.add_argument("--briefcase", type=str, default="", help="Path to an exported briefcase JSON")
 
     args, remaining = parser.parse_known_args()
     args.profile = str(args.profile or "").strip().lower().replace("_", "-")
@@ -4236,8 +3028,6 @@ def main():
 
     try:
         if action in ["help", "?"] or args.help:
-            core.show_help()
-        elif action == "commands":
             core.show_help()
         elif action == "start":
             core.start_guided(accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
@@ -4308,6 +3098,20 @@ def main():
                 profile=args.profile,
             )
         elif action == "migrate":
+            if remaining[:1] == ["sync"]:
+                core.migrate_sync_cmd(
+                    remaining[1] if len(remaining) > 1 else "",
+                    manifest_path=args.manifest,
+                    home_root=args.home_root,
+                    output=args.output,
+                    passphrase_env=args.passphrase_env,
+                    profile=args.profile,
+                    briefcase_path=args.briefcase,
+                    accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ),
+                    target_root=args.target_root,
+                    on_calendar=args.on_calendar,
+                )
+                return
             core.migrate_host_cmd(
                 manifest_path=args.manifest,
                 home_root=args.home_root,
@@ -4320,22 +3124,6 @@ def main():
                 on_calendar=args.on_calendar,
                 apply_rewrite=not args.skip_rewrite,
                 profile=args.profile,
-                recover_apps_ips=args.recover_apps_ips,
-            )
-        elif action == "recover-apps-ips":
-            core.migrate_host_cmd(
-                manifest_path=args.manifest,
-                home_root=args.home_root,
-                bundle_path="",
-                secrets_path="",
-                target_root=args.target_root,
-                passphrase_env=args.passphrase_env,
-                accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ),
-                install_timer=args.yes or args.accept_all,
-                on_calendar=args.on_calendar,
-                apply_rewrite=not args.skip_rewrite,
-                profile=args.profile,
-                recover_apps_ips=True,
             )
         elif action == "detect-ip":
             core.detect_ip_cmd()
@@ -4353,28 +3141,6 @@ def main():
         elif action == "agent":
             agent_action = remaining[0] if remaining else ""
             core.agent_cmd(agent_action, accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
-        elif action == "chat":
-            chat_action = remaining[0] if remaining and remaining[0].lower() in {"status", "show", "new"} else ""
-            chat_prompt = " ".join(remaining[1:] if chat_action else remaining).strip()
-            core.chat_cmd(
-                chat_action,
-                accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ),
-                prompt=chat_prompt,
-            )
-        elif action in {"examples", "playbook", "playbooks"}:
-            core.show_examples()
-        elif action == "auto":
-            core.show_auto_status(
-                powershell=args.powershell,
-                target_host=args.target_host,
-                remote_user=args.remote_user,
-                identity_file=args.identity_file,
-                repo_url=args.repo_url,
-                ref_name=args.ref_name,
-                destination=args.dest,
-                ps1_out=args.ps1_out,
-                windows_dir=args.windows_dir,
-            )
         elif action == "bridge":
             bridge_action = remaining[0] if remaining else ""
             if bridge_action in {"create", ""}:
@@ -4399,8 +3165,10 @@ def main():
                 hint("Use: omni bridge create|send|receive")
         elif action == "inventory":
             core.show_inventory(args.manifest, args.home_root, args.output, profile=args.profile)
-        elif action == "packages":
-            core.show_packages(args.output)
+        elif action == "briefcase":
+            core.show_briefcase(args.manifest, args.home_root, args.output, profile=args.profile)
+        elif action == "restore-plan":
+            core.show_restore_plan(args.manifest, args.home_root, args.output, profile=args.profile, briefcase_path=args.briefcase)
         elif action == "bundle-create":
             core.create_state_bundle_cmd(args.manifest, args.home_root, args.output, profile=args.profile)
         elif action == "bundle-restore":
@@ -4437,7 +3205,7 @@ def main():
             core.purge_cmd(args.manifest, args.home_root, args.include_secrets, args.yes, profile=args.profile)
         else:
             print(f"Unknown action: {action}")
-            hint("Run 'omni help' or 'omni commands' for available commands")
+            hint("Run 'omni help' for available commands")
     except KeyboardInterrupt:
         print()
         warn("Operación cancelada por el usuario.")

@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
@@ -122,7 +121,7 @@ def capture_watch_snapshot(manifest: Dict[str, Any], home_root: str = "/home/ubu
         digest.update(b"\n")
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat().replace("+00:00", "Z"),
         "host_root": str(host_root),
         "profile": normalized.get("profile", "unknown"),
         "file_count": len(entries),
