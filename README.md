@@ -1,419 +1,195 @@
-# OmniSync
+<div align="center">
 
-Portable migration CLI for moving a workstation or server without rebuilding it by hand.
+```
+  ██████╗ ███╗   ███╗███╗   ██╗██╗███████╗██╗   ██╗███╗   ██╗ ██████╗
+ ██╔═══██╗████╗ ████║████╗  ██║██║██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝
+ ██║   ██║██╔████╔██║██╔██╗ ██║██║███████╗ ╚████╔╝ ██╔██╗ ██║██║
+ ██║   ██║██║╚██╔╝██║██║╚██╗██║██║╚════██║  ╚██╔╝  ██║╚██╗██║██║
+ ╚██████╔╝██║ ╚═╝ ██║██║ ╚████║██║███████║   ██║   ██║ ╚████║╚██████╗
+  ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝
+```
 
-Built by Black Boss.
+**Move your entire workstation or server — without rebuilding it by hand.**
 
-## Instalación rápida
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](https://github.com/sxrubyo/omnisync)
+[![Status](https://img.shields.io/badge/status-active-brightgreen)](https://github.com/sxrubyo/omnisync)
 
-Nuevo host o primera instalación:
+</div>
 
-En Linux, macOS o WSL:
+---
 
+## What is OmniSync?
+
+OmniSync is an open-source CLI tool that packs your entire workstation or server into a portable **briefcase** — installed packages, dotfiles, SSH keys, VS Code extensions, Docker containers, secrets — and deploys it to any new machine in minutes.
+
+Think of it as `rsync` + `ansible` + `dotfiles manager`, but with a guided TUI, AI agent integration, and zero configuration required to get started.
+
+```
+Old Machine                          New Machine
+──────────────                       ──────────────
+● Packages (apt, pip, npm, cargo)    ● Restored automatically
+● VS Code extensions            →    ● Restored automatically
+● dotfiles (.bashrc, .gitconfig)     ● Restored automatically
+● SSH keys (public)                  ● Restored automatically
+● Docker containers                  ● Restored automatically
+● Git config                         ● Restored automatically
+● Secrets (.env, tokens)             ● Encrypted, separate pack
+```
+
+---
+
+## Quick Install
+
+**Linux, macOS or WSL:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash
 ```
 
-En PowerShell:
-
+**PowerShell (Windows):**
 ```powershell
 irm https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.ps1 | iex
 ```
 
-Luego:
-
-```bash
-omni
-omni commands
-omni guide
-omni connect --host <ip|fqdn> --user <user>
-```
-
-Ruta recomendada:
-
-- `omni`
-  - arranca el flujo guiado y detecta el host actual
-- `omni guide`
-  - launchpad interactivo para SSH Connect, Maleta, Restore, Agent y Migrate Sync
-- `omni briefcase --full`
-  - genera la maleta portable y el restore script
-- `omni connect`
-  - enlaza dos máquinas por SSH y envía el payload
-- `omni restore`
-  - restaura el destino desde bundle + secrets
-- `omni agent`
-  - configura Claude, GPT, Gemini, Mistral, Ollama o un endpoint compatible
-
-Instalación global por npm:
-
+**npm:**
 ```bash
 npm install -g omnisync
 ```
 
-## Superficie principal
+Then just run:
+```bash
+omni
+```
 
-Omni ya expone estas rutas operativas:
+The interactive guide takes it from there.
 
-- `omni guide`
-  - launchpad interactivo con flechas para SSH Connect, Maleta, Restore, AI Agent y Migrate Sync
-- `omni connect`
-  - conecta dos máquinas por SSH, detecta si el host remoto es limpio o existente y envía briefcase + restore script
-- `omni briefcase --full`
-  - genera la maleta completa con inventario real del host y un restore script portable
-- `omni restore-plan`
-  - deriva el plan de restauración según la plataforma destino
-- `omni agent`
-  - configura proveedor/modelo y deja bridges para Claude Code, Codex CLI, Gemini CLI y OpenCode CLI
-- `omni chat`
-  - habla con el agente, ejecuta comandos `omni` seguros y resume el siguiente paso
-- `omni auth github`
-  - guarda credenciales GitHub en `~/.omni/config.json`
-- `omni push`
-  - sube el briefcase JSON y el restore script a un repo privado
-- `omni pull`
-  - descarga la última maleta desde GitHub en una máquina nueva
+---
 
-El repo también ya trae estructura de comandos/skills para agentes, inspirada en `career-ops`:
+## Core Commands
 
+| Command | What it does |
+|---|---|
+| `omni` / `omni start` | Launch the interactive guided assistant |
+| `omni guide` | TUI launchpad — SSH, Briefcase, Restore, Agent, Migrate |
+| `omni briefcase --full` | Pack everything into a portable briefcase |
+| `omni connect --host <ip> --user <user>` | Link two machines via SSH and ship the payload |
+| `omni restore` | Restore from briefcase + secrets on a new machine |
+| `omni migrate` | Full migration — restore + rewrite host references |
+| `omni agent` | Configure Claude, GPT-4, Gemini, Mistral or Ollama |
+| `omni chat` | Talk to the AI agent, run omni commands by voice |
+| `omni auth github` | Save GitHub credentials to `~/.omni/config.json` |
+| `omni push` | Push briefcase to a private GitHub repo |
+| `omni pull` | Pull latest briefcase from GitHub on a new machine |
+| `omni doctor` | Health check — bundles, config, drift, placeholder hosts |
+| `omni detect-ip` | Show current host identity and files with drift |
+| `omni purge` | Free disk — dry run first, then `--yes` to execute |
+| `omni sync` | Pull remote snapshots defined in `config/servers.json` |
+
+---
+
+## What `omni briefcase --full` Captures
+
+```
+System packages         npm globals
+Python packages         Cargo crates
+VS Code extensions      Homebrew formulae/casks
+git config (global)     SSH public keys
+dotfiles                crontab
+systemd services        Docker containers + images
+Snap / Flatpak          
+```
+
+Output: `briefcase.json` + `briefcase.restore.sh` — portable, deterministic, runs on any Linux host.
+
+---
+
+## Migration Flow
+
+```
+1. INVENTORY     →  identify code, state, noise
+2. BUNDLE STATE  →  pack config/, data/, backups/, manifests
+3. SECRETS PACK  →  export .env, tokens, SSH keys — encrypted, separate
+4. BOOTSTRAP     →  clone repo, run install.sh on new host
+5. RECONCILE     →  omni fix + omni sync — idempotent, safe to repeat
+6. TIMER         →  systemd daily reconcile — set it and forget it
+```
+
+---
+
+## AI Agent Integration
+
+OmniSync ships with built-in bridges for the major AI coding agents:
+
+```bash
+omni agent          # select provider + model
+omni chat           # talk to agent, run omni commands
+```
+
+Supported providers: **Claude**, **GPT-4**, **Gemini**, **Mistral**, **Ollama** (local), any OpenAI-compatible endpoint.
+
+Skills and command files are pre-configured for:
 - `.claude/skills/omni-sync/SKILL.md`
 - `.gemini/commands/omni-sync.toml`
-- `.gemini/commands/omni-agent.toml`
 - `.opencode/commands/omni-sync.md`
-- `.opencode/commands/omni-agent.md`
 
-Y el instalador ahora repara wrappers viejos de `omni` cuando detecta que un binario anterior está sombreando al nuevo en `PATH`.
+---
 
-## Qué incluye `omni briefcase --full`
+## Profiles
 
-La maleta completa inventaría:
+| Profile | What it captures |
+|---|---|
+| `production-clean` | Core productive footprint — state and secrets separate |
+| `full-home` | Entire `/home/ubuntu` as state root — secrets always separate |
 
-- paquetes del sistema
-- paquetes Python
-- paquetes npm globales
-- paquetes Cargo
-- Homebrew formulae/casks
-- Snap y Flatpak
-- extensiones de VS Code
-- `git config --global`
-- llaves SSH públicas
-- dotfiles principales
-- crontab del usuario
-- servicios systemd habilitados
-- contenedores e imágenes Docker
+```bash
+omni init --profile full-home        # capture everything
+omni init --profile production-clean # back to clean productive profile
+```
 
-Y deja dos artefactos:
+---
 
-- `briefcase.json`
-- `briefcase.restore.sh`
+## Installation Modes
 
-Ahora el punto de entrada recomendado ya no es memorizar comandos bajos: es ejecutar `omni` o `omni start` y dejar que la CLI te guíe hacia `SSH Connect`, `Maleta`, `Restore`, `Migrate Sync`, `Doctor`, `Agent` o `Chat`.
-
-Por defecto no intenta clonar `/home/ubuntu` tal cual.
-La regla base es preservar lo que sí construye producto y separar lo que debe viajar aparte. Si activas `full-home`, entonces sí captura literalmente todo `/home/ubuntu` como estado raíz y mantiene secretos aparte.
-
-## Flujo productivo limpio
-
-Este es el flujo recomendado para una reinstalación real, una migración entre máquinas o una recuperación desde backup:
-
-1. **Inventory**
-   - identificar qué es código, qué es estado y qué es ruido
-   - dejar fuera caches, `node_modules`, logs viejos, temporales y artefactos reproducibles
-   - conservar repos, configs, datos operativos y snapshots útiles
-
-2. **Bundle state**
-   - empaquetar `config/`, `data/`, `backups/`, `logs/`, `tasks.json` y manifiestos operativos
-   - guardar el estado restaurable de forma determinista
-   - mantener la restauración portable entre Ubuntu/Linux
-
-3. **Secrets pack**
-   - exportar secretos aparte de todo lo demás
-   - incluir `.env`, tokens, credenciales SSH, llaves de servicio y sesiones sensibles
-   - cifrarlo antes de moverlo
-   - nunca versionarlo en Git ni mezclarlo con el bundle de estado
-
-4. **Bootstrap**
-   - instalar dependencias base del host
-   - clonar o actualizar el repo privado
-   - ejecutar `install.sh --compose --sync`
-   - preparar `omni` en `/usr/local/bin`
-
-5. **Reconcile**
-   - reconciliar estado con `omni fix`
-   - sincronizar snapshots remotos con `omni sync`
-   - reforzar la configuración local sin tocar `src/`
-   - aplicar el mismo proceso cuantas veces haga falta; debe ser idempotente
-
-6. **Timer**
-   - programar reconciliación diaria con `systemd`
-   - ejecutar mantenimiento y sync cada 24 horas
-   - dejar un punto único de actualización que no dependa de intervención manual
-
-## Qué se preserva
-
-OmniSync trabaja bien cuando se conservan estas piezas:
-
-- `config/`
-- `data/`
-- `backups/`
-- `logs/`
-- `tasks.json`
-- `.env` y secretos relacionados, pero solo en el secrets pack cifrado
-- repositorios productivos definidos en `config/repos.json`
-- inventario remoto de `config/servers.json`
-
-## Qué no se debe arrastrar por defecto
-
-- `node_modules`
-- `.cache`
-- `__pycache__`
-- logs históricos reproducibles
-- temporales de build
-- artefactos derivados que se pueden regenerar
-- `.git` en bundles de estado
-
-## Perfiles
-
-Omni usa perfiles de manifest para decidir qué captura y cómo activa la migración.
-
-- `production-clean`: conserva la huella productiva principal, con estado y secretos separados
-- `full-home`: captura todo `/home/ubuntu` como raíz de estado y mantiene secretos aparte
-- el `system_manifest.example.json` del repositorio ya viene preparado para `full-home`
-- `omni init --profile full-home`: activa el perfil completo antes de capturar o migrar
-- `omni init --profile production-clean`: vuelve al perfil productivo limpio
-
-### Qué entra realmente en `full-home`
-
-Si activas `full-home`, Omni trata `/home/ubuntu` entero como estado. Eso significa que sí entran, entre otras cosas:
-
-- `.codex`
-- `.agents`
-- `.nova`
-- `.n8n`
-- `melissa`
-- `melissa-instances`
-- `whatsapp-bridge`
-- `nova-os`
-- `Workflows-n8n`
-- `xus-https`
-- `melissa-backups`
-
-`melissa-backups` importa si de verdad quieres poder reconstruir el host “con todo”. Suele ser uno de los bloques más pesados porque guarda respaldos históricos de Melissa. No es código fuente; es estado archivado.
-
-### GitHub público por unos segundos: qué sí y qué no
-
-Poner el repo de GitHub público por unos segundos sí puede hacer más fácil clonar `omni-core` o bajar el bootstrap en una máquina virgen.
-
-Pero eso no sustituye una migración real. GitHub solo resuelve mejor el transporte del código del repositorio. No reemplaza:
-
-- bundles de estado
-- secrets pack
-- `.env`
-- claves SSH
-- sesiones
-- datos de `n8n`
-- dumps de PM2
-- estado vivo de `/home/ubuntu`
-
-La forma correcta sigue siendo:
-
-1. clonar o descargar `omni-core`
-2. ejecutar `omni init --profile full-home` si quieres todo `/home/ubuntu`
-3. correr `omni capture`
-4. mover `state bundle` + `secrets bundle`
-5. restaurar con `omni restore` o `omni migrate`
-
-### Automatización de host y backups
-
-Omni ya está orientado a que no tengas que ir persiguiendo IPs o snapshots a mano:
-
-- `omni start` y `omni doctor` diagnostican si el host actual sigue teniendo referencias al host viejo
-- `omni detect-ip` muestra la identidad actual y cuántos archivos siguen con drift
-- `omni migrate` reescribe referencias del host automáticamente por defecto
-- si quieres impedirlo, usas `omni migrate --skip-rewrite`
-- `omni rewrite-ip --apply` sigue existiendo como comando directo
-
-Además:
-
-- `omni init`, `omni restore`, `omni migrate` y `omni rewrite-ip --apply` crean backup automático en `backups/auto-bundles`
-- el timer diario `omni-update.timer` ahora ejecuta primero `omni backup`, luego `omni fix` y `omni sync`
-
-## Modos de instalación
-
-### 0. Guía simple desde GitHub
-
-Si no quieres complicarte con claves, wrappers ni PowerShell remoto:
-
-- [GUIA_INSTALACION_SIMPLE_GITHUB.md](/home/ubuntu/omni-core/GUIA_INSTALACION_SIMPLE_GITHUB.md)
-
-### 1. Bootstrap Linux local
-
-Si ya estás en la máquina destino:
-
+### 1. Local Linux Bootstrap
 ```bash
 bash bootstrap.sh git@github.com:sxrubyo/omnisync.git /opt/omni-core main
 ```
 
-Ese flujo:
-
-- instala dependencias base de Ubuntu
-- clona o actualiza el repo privado
-- crea archivos base si faltan
-- ejecuta `omni sync`
-- levanta Docker Compose
-
-### 2. Wrapper PowerShell a un host Linux remoto
-
-Desde otra PC, incluyendo PowerShell en Windows:
-
+### 2. Remote PowerShell → Linux
 ```powershell
 pwsh ./bootstrap.ps1 -TargetHost 1.2.3.4 -User ubuntu -RepoUrl git@github.com:sxrubyo/omnisync.git -Branch main -InstallTimer
 ```
 
-Si no pasas `-Destination`, `bootstrap.ps1` escanea el host remoto, recomienda rutas y te deja elegir o escribir una personalizada.
-
-### 2.1 Instalación local directa en Windows
-
-```powershell
-irm https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.ps1 | iex
-```
-
-Ese flujo:
-
-- prepara `~/.omni`
-- descarga el repo público a `~/.omni/repo`
-- crea un runtime Python aislado en `~/.omni/runtime`
-- deja `omni.cmd` en `~/.local/bin`
-- actualiza el `Path` del usuario para que `omni` quede disponible en PowerShell
-
-Si prefieres inspeccionar el script antes de ejecutarlo:
-
-```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.ps1 -OutFile install.ps1
-./install.ps1
-```
-
-Ese wrapper se conecta por SSH al host Linux, prepara paquetes base, clona o actualiza OmniSync y dispara el mismo bootstrap de producción.
-Si agregas `-InstallTimer`, también deja programado el reconcile diario con `systemd`.
-
-Guía dedicada:
-
-- [GUIA_POWERSHELL_WINDOWS.md](/home/ubuntu/omni-core/GUIA_POWERSHELL_WINDOWS.md)
-
-### 3. Carpeta copiada por SCP
-
+### 3. SCP + Manual
 ```bash
-scp -r omni-core ubuntu@tu-servidor:/opt/omni-core
-ssh ubuntu@tu-servidor
-cd /opt/omni-core
-chmod +x install.sh bin/omni bootstrap.sh
-./install.sh --compose --sync
+scp -r omni-core ubuntu@server:/opt/omni-core
+ssh ubuntu@server "cd /opt/omni-core && chmod +x install.sh bin/omni bootstrap.sh && ./install.sh --compose --sync"
 ```
 
-### 4. GitHub privado
-
+### 4. GitHub Clone
 ```bash
 git clone git@github.com:sxrubyo/omnisync.git /opt/omni-core
-cd /opt/omni-core
-chmod +x install.sh bin/omni bootstrap.sh
-./install.sh --compose --sync
+cd /opt/omni-core && ./install.sh --compose --sync
 ```
 
-## Entrada recomendada
+---
 
-La superficie principal ahora es:
+## What NOT to Bundle (by default)
 
-```bash
-omni
-omni start
-omni migrate sync
-omni briefcase
-omni restore-plan
-omni doctor
-omni capture
-omni restore
-omni migrate
-omni detect-ip
-omni rewrite-ip
-omni bridge
+```
+node_modules/        .cache/         __pycache__/
+build artifacts      tmp/            historical logs
+reproducible deps    .venv/          dist/
 ```
 
-La regla práctica es:
+These are excluded automatically. Override with `--include-all` if you need them.
 
-- `omni` o `omni start`: entrar al asistente guiado
-- `omni migrate sync`: superficie nueva para create/plan/capture/restore
-- `omni briefcase`: exportar el contrato portable del maletín de migración
-- `omni restore-plan`: derivar el plan de restauración según el host destino
-- `omni capture`: crear recovery pack completo
-- `omni restore`: restaurar bundle + secrets
-- `omni migrate`: reconstruir host y corregir referencias
-- `omni doctor`: revisar salud, bundles y problemas de configuración
+---
 
-## Recuperación y reconciliación
+## Server Inventory
 
-El punto de entrada operativo sigue siendo `install.sh` y la CLI `omni`.
-
-Comandos útiles:
-
-```bash
-omni
-omni migrate sync
-omni migrate sync create
-omni migrate sync plan
-omni briefcase
-omni restore-plan
-omni doctor
-omni capture
-omni restore
-omni migrate
-omni detect-ip
-omni rewrite-ip
-omni bridge create
-omni bridge send --dest ubuntu@host:/ruta
-omni help
-omni status
-omni inventory
-omni bundle-create
-omni secrets-export
-omni reconcile --bundle-latest --secrets-latest
-omni purge
-omni sync
-omni fix
-omni install
-omni logs
-omni backup
-docker compose up -d --build
-docker compose logs -f omni-core
-```
-
-`omni doctor` revisa salud, bundles, manifest y problemas obvios como hosts placeholder.
-`omni briefcase` exporta el contrato portable que describe plataforma fuente, paths, paquetes, repos y defaults de restore.
-`omni restore-plan` compara ese contrato con el host actual y marca qué se aplica directo y qué necesita revisión manual.
-`omni migrate sync` agrupa esa nueva capa pública sin romper los comandos existentes de `capture`, `restore` y `migrate`.
-`omni capture` produce estado + secretos + resumen verificable.
-`omni migrate` reutiliza restore/reconcile y puede reescribir referencias de host/IP.
-`omni sync` trae snapshots y archivos remotos definidos en `config/servers.json`.
-`omni purge` hace un dry-run de todo lo que puede borrarse para recuperar disco; con `--yes` lo elimina de verdad.
-
-## Reconciliación diaria
-
-La recomendación es dejar un `systemd timer` que ejecute reconciliación cada 24 horas.
-
-La idea operativa es:
-
-- refrescar el repo
-- correr `omni fix`
-- correr `omni sync`
-- validar salud del stack
-
-Si la máquina se reconstruye desde cero, el timer vuelve a instalarse junto con el bootstrap.
-
-## Inventario de servidores
-
-Plantilla:
-
-- `config/servers.example.json`
-
-Ejemplo:
+Define your servers in `config/servers.json`:
 
 ```json
 {
@@ -426,89 +202,75 @@ Ejemplo:
       "protocol": "rsync",
       "paths": [
         "/home/ubuntu/melissa",
-        "/home/ubuntu/nova-os",
-        "/home/ubuntu/.nova",
-        "/home/ubuntu/omni-core"
+        "/home/ubuntu/nova-os"
       ],
-      "excludes": [".git", "__pycache__", "*.pyc", "node_modules"]
+      "excludes": [".git", "__pycache__", "node_modules"]
     }
   ]
 }
 ```
 
-Los snapshots remotos quedan en:
+Remote snapshots land in: `data/servers/<server>/<normalized-path>/`
 
-```text
-data/servers/<server>/<ruta-remota-normalizada>/
-```
+---
 
-## Instalación automática recomendada
+## Restore Flow
 
 ```bash
-cd /opt/omni-core
-omni init --profile full-home
-nano .env
-nano config/repos.json
-nano config/servers.json
-./install.sh --compose --sync --timer
-omni
+git clone git@github.com:sxrubyo/omnisync.git /opt/omni-core
+omni init --profile full-home   # if you want everything
+# move bundle + secrets to new host
+omni restore                    # or: omni migrate
+omni doctor                     # verify health
+omni detect-ip                  # check for host drift
+omni rewrite-ip --apply         # fix references if needed
 ```
 
-## Flujo recomendado de restauración
+---
 
-1. clonar o copiar `omni-core`
-2. correr `omni init --profile full-home` si quieres llevar todo `/home/ubuntu`
-3. mover `bundle + secrets` al host nuevo
-4. ejecutar `omni restore` o `omni migrate`
-5. validar `omni doctor`
-6. revisar `omni detect-ip`
-7. si hace falta, ejecutar `omni rewrite-ip`
-
-## Liberar espacio
-
-Cuando la máquina ya quedó reconstruida y quieres recuperar disco sin tocar los repos que puedes volver a clonar desde GitHub:
+## Free Disk Space
 
 ```bash
-omni purge
-omni purge --yes
+omni purge              # dry run — shows what would be deleted
+omni purge --yes        # execute
+omni purge --include-secrets --yes   # also remove restored secrets
 ```
 
-Si además quieres eliminar secretos restaurados desde bundle:
+---
+
+## Daily Reconciliation (systemd)
 
 ```bash
-omni purge --include-secrets --yes
+./install.sh --timer   # installs omni-update.timer
 ```
 
-Ese comando:
+Runs every 24h: `omni backup` → `omni fix` → `omni sync` → health check.
+No manual intervention required. Reinstalls itself if the machine is rebuilt.
 
-- elimina bundles, snapshots y logs locales de Omni
-- elimina estado transferido que no está gestionado por Git
-- limpia `node_modules`, `.venv`, `build`, `dist`, `tmp`, `output` y otros artefactos dentro de repos Git
-- preserva por defecto los repos base clonados desde GitHub
+---
 
-## Simulación local
+## Local Simulation
 
-Si quieres probar una migración en la misma máquina sin tocar producción:
+Test a migration without touching production:
 
 ```bash
 rsync -av --delete /opt/omni-core/ /opt/omni-core-test/
 cd /opt/omni-core-test
-mkdir -p data-test backups-test logs-test
 docker compose -p omni-core-test -f docker-compose.test.yml up -d --build
-docker compose -p omni-core-test -f docker-compose.test.yml ps
-docker compose -p omni-core-test -f docker-compose.test.yml logs -f omni-core-test
 ```
 
-Para tumbar la simulación:
+---
 
-```bash
-docker compose -p omni-core-test -f docker-compose.test.yml down
-```
+## Contributing
 
-## Notas operativas
+OmniSync is early and open. Issues, PRs and feedback welcome.
 
-- `omni sync` trae archivos remotos por `rsync` o `scp`
-- para GitHub privado, el host necesita SSH o credenciales válidas
-- el bundle de estado y el secrets pack deben viajar por caminos separados
-- el wrapper PowerShell es el lanzador remoto; el bootstrap real sigue ocurriendo en Linux
-- el objetivo es que una nueva instancia vuelva a un estado útil sin depender de restauraciones manuales una por una
+If you're building something on top of it — reach out.
+
+---
+
+<div align="center">
+
+Built by [sxrubyo](https://github.com/sxrubyo) · MIT License
+
+</div>
