@@ -96,7 +96,8 @@ ENV_OMNI_HOME = os.environ.get("OMNI_HOME", "").strip()
 USE_ENV_PATHS = False
 if ENV_OMNI_HOME:
     candidate_home = Path(ENV_OMNI_HOME).expanduser()
-    if candidate_home.exists() and os.access(candidate_home, os.W_OK):
+    parent_dir = candidate_home if candidate_home.exists() else candidate_home.parent
+    if os.access(parent_dir, os.W_OK):
         OMNI_HOME = candidate_home.resolve()
         USE_ENV_PATHS = True
     else:
@@ -130,10 +131,12 @@ TASKS_FILE = _path_override("OMNI_TASKS_FILE", OMNI_HOME / "tasks.json")
 REPOS_FILE = _path_override("OMNI_REPOS_FILE", CONFIG_DIR / "repos.json")
 SERVERS_FILE = _path_override("OMNI_SERVERS_FILE", CONFIG_DIR / "servers.json")
 SYSTEM_MANIFEST_FILE = _path_override("OMNI_MANIFEST_FILE", CONFIG_DIR / "system_manifest.json")
+EXPORT_DIR = _path_override("OMNI_EXPORT_DIR", OMNI_HOME / "exports")
 AUTO_BACKUP_ON_CHANGE = os.environ.get("OMNI_AUTO_BACKUP_ON_CHANGE", "1").strip().lower() in {"1", "true", "yes", "on"}
 AUTO_BACKUP_KEEP = max(1, int(os.environ.get("OMNI_AUTO_BACKUP_KEEP", "5")))
 WATCH_BACKUP_COOLDOWN = max(30, int(os.environ.get("OMNI_WATCH_BACKUP_COOLDOWN", "600")))
 OMNI_DRY_RUN = os.environ.get("OMNI_DRY_RUN", "").strip().lower() in {"1", "true", "yes", "on"}
+SUPPORTED_LANGUAGES = {"es": "Español", "en": "English"}
 
 
 def load_env_file(env_path: Path) -> None:
@@ -154,6 +157,13 @@ def load_env_file(env_path: Path) -> None:
 
 
 load_env_file(ENV_FILE)
+
+
+def normalize_language(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw.startswith("en"):
+        return "en"
+    return "es"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLATFORM COMPATIBILITY
@@ -1238,11 +1248,37 @@ class OmniCore:
         self.load_tasks()
 
     def ensure_runtime_dirs(self):
-        for path in (OMNI_HOME, CONFIG_DIR, STATE_DIR, BACKUP_DIR, BUNDLE_DIR, AUTO_BUNDLE_DIR, LOG_DIR):
+        for path in (OMNI_HOME, CONFIG_DIR, STATE_DIR, BACKUP_DIR, BUNDLE_DIR, AUTO_BUNDLE_DIR, LOG_DIR, EXPORT_DIR):
             path.mkdir(parents=True, exist_ok=True)
 
     def is_dry_run(self) -> bool:
         return bool(self.dry_run)
+
+    def global_config(self) -> Dict[str, Any]:
+        return load_global_config(GLOBAL_CONFIG_FILE)
+
+    def current_language(self) -> str:
+        env_language = os.environ.get("OMNI_LANG", "").strip()
+        if env_language:
+            return normalize_language(env_language)
+        return normalize_language(self.global_config().get("language", "es"))
+
+    def t(self, es: str, en: str) -> str:
+        return en if self.current_language() == "en" else es
+
+    def persist_language(self, language: str) -> str:
+        normalized = normalize_language(language)
+        payload = self.global_config()
+        payload["language"] = normalized
+        if not self.is_dry_run():
+            save_global_config(GLOBAL_CONFIG_FILE, payload)
+        return normalized
+
+    def default_briefcase_paths(self) -> tuple[Path, Path]:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        host = socket.gethostname().split(".", 1)[0] or "host"
+        base = EXPORT_DIR / f"{stamp}-{host}-briefcase.json"
+        return base, base.with_suffix(".restore.sh")
 
     def load_repo_entries(self) -> List[Any]:
         defaults = [
@@ -1814,28 +1850,61 @@ class OmniCore:
     def show_config(self):
         """Show Omni configuration."""
         print_logo(compact=True)
-        section("Configuration")
+        section(self.t("Configuración", "Configuration"))
 
-        kv("Version", OMNI_VERSION)
+        global_config = self.global_config()
+        kv(self.t("Versión", "Version"), OMNI_VERSION)
         kv("Build", OMNI_BUILD)
-        kv("Codename", OMNI_CODENAME)
-        kv("Tasks File", self.tasks_file)
-        kv("Repos File", str(REPOS_FILE))
+        kv(self.t("Codename", "Codename"), OMNI_CODENAME)
+        kv(self.t("Idioma", "Language"), f"{self.current_language()} ({SUPPORTED_LANGUAGES[self.current_language()]})", color=C.GRN)
+        kv(self.t("Archivo de tareas", "Tasks File"), self.tasks_file)
+        kv(self.t("Archivo de repos", "Repos File"), str(REPOS_FILE))
         kv("Manifest", str(self.manifest_path))
-        kv("Bundle Dir", str(self.bundle_dir))
-        kv("Agent Config", str(AGENT_CONFIG_FILE))
+        kv(self.t("Directorio de bundles", "Bundle Dir"), str(self.bundle_dir))
+        kv(self.t("Directorio de exportación", "Export Dir"), str(EXPORT_DIR))
+        kv(self.t("Config de agente", "Agent Config"), str(AGENT_CONFIG_FILE))
         kv("Logs", str(LOG_DIR / "omni.log"))
-        kv("Repos", str(len(self.repos)))
-        kv("Telegram", "configured" if os.getenv("OMNI_TELEGRAM_TOKEN") else "not configured")
+        kv(self.t("Repos", "Repos"), str(len(self.repos)))
+        kv("Telegram", self.t("configurado", "configured") if os.getenv("OMNI_TELEGRAM_TOKEN") else self.t("no configurado", "not configured"))
+        github_cfg = global_config.get("github") or {}
+        kv("GitHub", self.t("autenticado", "authenticated") if github_cfg.get("token") else self.t("no configurado", "not configured"), color=C.GRN if github_cfg.get("token") else C.YLW)
+        if github_cfg.get("repo"):
+            kv(self.t("Repo de GitHub", "GitHub Repo"), f"{github_cfg.get('owner', '')}/{github_cfg.get('repo', '')}".strip("/"), color=C.GRN)
         agent_config = load_agent_config(AGENT_CONFIG_FILE)
         if agent_config:
-            kv("Agent Provider", str(agent_config.get("provider", "unknown")), color=C.GRN)
+            kv(self.t("Proveedor de agente", "Agent Provider"), str(agent_config.get("provider", "unknown")), color=C.GRN)
         nl()
 
         if self.tasks:
-            bullet("Tasks:", C.G3)
+            bullet(self.t("Tareas:", "Tasks:"), C.G3)
             for task in self.tasks:
                 dim("  • " + task.get("name", "Unnamed"))
+
+    def config_cmd(self, subaction: str = "", *, value: str = "") -> None:
+        normalized = str(subaction or "").strip().lower()
+        if normalized in {"language", "lang", "idioma"}:
+            requested = value.strip()
+            if not requested and self.is_interactive():
+                options = [("es", "Español", "UI y mensajes operativos en español."), ("en", "English", "UI and operator copy in English.")]
+                selected = select_menu(
+                    [title for _, title, _ in options],
+                    title="Elige el idioma principal de Omni",
+                    descriptions=[description for _, _, description in options],
+                    icons=["🇪🇸", "🇺🇸"],
+                    default=0 if self.current_language() == "es" else 1,
+                    show_index=True,
+                    footer="↑/↓ elegir idioma · Enter confirmar",
+                )
+                requested = options[selected][0]
+            if requested:
+                language = self.persist_language(requested)
+                if self.is_dry_run():
+                    warn(self.t(f"Dry run activo: no se guardó el idioma {language}.", f"Dry run active: language {language} was not saved."))
+                else:
+                    ok(self.t(f"Idioma activo: {language} ({SUPPORTED_LANGUAGES[language]})", f"Active language: {language} ({SUPPORTED_LANGUAGES[language]})"))
+            self.show_config()
+            return
+        self.show_config()
 
     def show_agent_status(self):
         print_logo(compact=True)
@@ -2193,6 +2262,41 @@ class OmniCore:
             "restore_script": build_restore_script(briefcase, fresh_server=True),
         }
 
+    def _briefcase_step(self, title: str, detail: str) -> None:
+        bullet(title, C.GRN, bold=True)
+        dim(detail)
+
+    def _offer_github_briefcase_sync(self, briefcase_path: Path, *, profile: str = "") -> None:
+        config = self.global_config()
+        github_cfg = config.get("github") or {}
+        token = str(github_cfg.get("token") or "").strip() or gh_cli_token()
+        if not token:
+            hint(self.t("GitHub no está autenticado todavía. Haz `gh auth login` o `omni auth github` cuando quieras sincronizar la maleta a un repo privado.", "GitHub is not authenticated yet. Run `gh auth login` or `omni auth github` when you want to sync the briefcase to a private repo."))
+            return
+        if not self.is_interactive():
+            hint(self.t("GitHub listo. Ejecuta `omni push --briefcase <archivo>` para subir esta maleta a un repo privado.", "GitHub is ready. Run `omni push --briefcase <file>` to upload this briefcase to a private repo."))
+            return
+        if not self.confirm_step(self.t("¿Quieres crear o reutilizar un repo privado de GitHub y subir esta maleta ahora?", "Do you want to create or reuse a private GitHub repo and upload this briefcase now?"), default=False):
+            return
+        try:
+            identity = github_identity(token)
+        except Exception as err:
+            warn(self.t(f"No pude validar la sesión de GitHub: {err}", f"I could not validate the GitHub session: {err}"))
+            return
+        default_slug = str(github_cfg.get("repo") or f"{identity.get('login', 'omnisync')}/omnisync-briefcases")
+        repo_slug = self.prompt_text(self.t("Repo privado de GitHub", "Private GitHub repo"), default_slug)
+        config["github"] = {
+            "owner": parse_repo_slug(repo_slug, default_owner=str(identity.get("login", ""))).owner,
+            "repo": parse_repo_slug(repo_slug, default_owner=str(identity.get("login", ""))).repo,
+            "token": token,
+            "auth_source": github_cfg.get("auth_source") or ("gh-cli" if not github_cfg.get("token") else github_cfg.get("auth_source", "saved")),
+            "authenticated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "user": str(identity.get("login", "")),
+        }
+        if not self.is_dry_run():
+            save_global_config(GLOBAL_CONFIG_FILE, config)
+        self.push_cmd(briefcase_path=str(briefcase_path), repo_slug=repo_slug, profile=profile)
+
     def auth_cmd(self, subaction: str = "", *, repo_slug: str = "") -> None:
         normalized = str(subaction or "").strip().lower()
         if normalized not in {"github", "gh"}:
@@ -2411,6 +2515,7 @@ class OmniCore:
         bullet("omni commands  - Show this command center explicitly", C.GRN)
         bullet("omni connect   - Probe a remote Linux host and send the migration payload", C.GRN)
         bullet("omni briefcase - Build the portable migration contract", C.GRN)
+        dim("    Guarda la maleta y el restore script en ~/.omni/exports aunque no pases --output.")
         bullet("omni restore-plan - Derive the target-side restore sequence", C.GRN)
         bullet("omni migrate sync - Use the new migration family around the briefcase contract", C.GRN)
         bullet("omni chat      - Talk to Omni Agent and let it run safe `omni` actions", C.GRN)
@@ -2424,7 +2529,7 @@ class OmniCore:
         bullet("omni restart   - Restart PM2 services", C.PRIMARY)
         bullet("omni backup    - Create system backup", C.PRIMARY)
         bullet("omni transfer  - Transfer files to remote", C.PRIMARY)
-        bullet("omni config    - Show configuration", C.PRIMARY)
+        bullet("omni config    - Show configuration or set `omni config language <es|en>`", C.PRIMARY)
         bullet("omni version   - Show version info", C.PRIMARY)
         bullet("omni monitor   - Continuous monitoring mode", C.PRIMARY)
         bullet("omni clean     - Clean temp files and caches", C.PRIMARY)
@@ -2474,6 +2579,7 @@ class OmniCore:
         bullet("--profile       Manifest profile (production-clean|full-home)", C.G3)
         bullet("--output        Output file or directory", C.G3)
         bullet("--restore-script  Output path for generated restore shell script", C.G3)
+        bullet("--language      Preferred UI language for `omni config` (es|en)", C.G3)
         bullet("--bundle        Explicit state bundle path", C.G3)
         bullet("--secrets       Explicit secrets bundle path", C.G3)
         bullet("--target-root   Restore target root", C.G3)
@@ -2991,54 +3097,96 @@ class OmniCore:
 
     def show_doctor(self):
         print_logo(compact=True)
-        section("Doctor")
+        section(self.t("Doctor", "Doctor"))
 
         disk = self.fixer.check_disk_space()
         mem = self.fixer.check_memory()
         pm2 = self.fixer.check_and_fix_pm2()
+        global_config = self.global_config()
+        github_cfg = global_config.get("github") or {}
+        tool_checks = {
+            "ssh": shutil.which("ssh"),
+            "sftp": shutil.which("sftp"),
+            "rsync": shutil.which("rsync"),
+            "git": shutil.which("git"),
+            "gh": shutil.which("gh"),
+            "sshpass": shutil.which("sshpass"),
+        }
+        warnings: List[str] = []
 
-        kv("Disk", disk.get("message", "Unknown"), color=C.GRN if disk.get("status") in {"ok", "skipped"} else C.YLW)
-        kv("Memory", mem.get("message", "Unknown"), color=C.GRN if mem.get("status") in {"ok", "skipped"} else C.YLW)
+        kv(self.t("Disco", "Disk"), disk.get("message", "Unknown"), color=C.GRN if disk.get("status") in {"ok", "skipped"} else C.YLW)
+        kv(self.t("Memoria", "Memory"), mem.get("message", "Unknown"), color=C.GRN if mem.get("status") in {"ok", "skipped"} else C.YLW)
         kv("PM2", pm2.get("message", "Unknown"), color=C.GRN if pm2.get("status") in {"ok", "skipped"} and not pm2.get("restarted") else C.YLW)
         kv("Manifest", str(self.manifest_path), color=C.GRN)
         try:
             manifest = load_manifest(self.manifest_path, str(Path.home()))
-            kv("Profile", str(manifest.get("profile", "unknown")), color=C.GRN)
-            kv("Host Root", str(manifest.get("host_root", "unknown")), color=C.GRN)
+            kv(self.t("Perfil", "Profile"), str(manifest.get("profile", "unknown")), color=C.GRN)
+            kv(self.t("Raíz del host", "Host Root"), str(manifest.get("host_root", "unknown")), color=C.GRN)
             drift = self.build_host_drift_report(root=str(manifest.get("host_root", str(Path.home()))))
             context = drift["context"]
             plan = drift["plan"]
             if not context["summary_found"]:
-                kv("Host Drift", "No capture summary yet", color=C.G3)
+                kv(self.t("Drift del host", "Host Drift"), self.t("Sin capture summary todavía", "No capture summary yet"), color=C.G3)
             elif plan and plan.changed_files:
-                kv("Host Drift", f"{plan.changed_files} files need rewrite", color=C.YLW)
+                kv(self.t("Drift del host", "Host Drift"), self.t(f"{plan.changed_files} archivos necesitan rewrite", f"{plan.changed_files} files need rewrite"), color=C.YLW)
             else:
-                kv("Host Drift", "Aligned or no matches", color=C.GRN)
+                kv(self.t("Drift del host", "Host Drift"), self.t("Alineado o sin coincidencias", "Aligned or no matches"), color=C.GRN)
         except Exception:
             pass
-        kv("Bundle Dir", str(self.bundle_dir), color=C.GRN)
+        kv(self.t("Directorio de bundles", "Bundle Dir"), str(self.bundle_dir), color=C.GRN)
+        kv(self.t("Auth de GitHub", "GitHub Auth"), self.t("listo", "ready") if github_cfg.get("token") or gh_cli_token() else self.t("faltante", "missing"), color=C.GRN if github_cfg.get("token") or gh_cli_token() else C.YLW)
+        kv("Language", f"{self.current_language()} ({SUPPORTED_LANGUAGES[self.current_language()]})", color=C.GRN)
         nl()
 
         bundle_summary = summarize_bundle_pair(bundle_dir=self.bundle_dir)
         if bundle_summary.get("state_bundle"):
-            kv("Latest State Bundle", str(bundle_summary["state_bundle"]["path"]), color=C.GRN)
+            kv(self.t("Último state bundle", "Latest State Bundle"), str(bundle_summary["state_bundle"]["path"]), color=C.GRN)
         else:
-            warn("No state bundle found yet. Run `omni capture`.")
+            warn(self.t("No hay state bundle todavía. Ejecuta `omni capture`.", "No state bundle found yet. Run `omni capture`."))
+            warnings.append(self.t("No hay state bundle reciente.", "There is no recent state bundle."))
         if bundle_summary.get("secrets_bundle"):
-            kv("Latest Secrets Bundle", str(bundle_summary["secrets_bundle"]["path"]), color=C.GRN)
+            kv(self.t("Último secrets bundle", "Latest Secrets Bundle"), str(bundle_summary["secrets_bundle"]["path"]), color=C.GRN)
         else:
-            warn("No secrets bundle found yet. Run `omni capture`.")
+            warn(self.t("No hay secrets bundle todavía. Ejecuta `omni capture`.", "No secrets bundle found yet. Run `omni capture`."))
+            warnings.append(self.t("No hay secrets bundle reciente.", "There is no recent secrets bundle."))
+        nl()
+
+        section(self.t("Checks de runtime", "Runtime Checks"))
+        for tool_name, path in tool_checks.items():
+            kv(tool_name, path or "missing", color=C.GRN if path else C.YLW, key_width=14)
+        if not tool_checks["ssh"]:
+            warnings.append(self.t("Falta `ssh`; `omni connect` no podrá abrir conexiones remotas.", "Missing `ssh`; `omni connect` cannot open remote connections."))
+        if not tool_checks["sftp"]:
+            warnings.append(self.t("Falta `sftp`; los destinos Windows/OpenSSH quedarán limitados.", "Missing `sftp`; Windows/OpenSSH targets will be limited."))
+        if not tool_checks["gh"] and not github_cfg.get("token"):
+            warnings.append(self.t("No hay sesión de GitHub ni token guardado; la maleta no podrá subirse automáticamente.", "There is no GitHub session or saved token; the briefcase cannot be uploaded automatically."))
+        if not tool_checks["sshpass"]:
+            warnings.append(self.t("No está `sshpass`; la autenticación SSH por contraseña no se puede automatizar.", "`sshpass` is missing; password-based SSH cannot be automated."))
+        if mem.get("available_mb", 0) and mem.get("available_mb", 0) < 1024:
+            warnings.append(self.t(f"Memoria disponible baja: {mem.get('available_mb')} MB.", f"Low available memory: {mem.get('available_mb')} MB."))
+        if disk.get("usage_percent", 0) and disk.get("usage_percent", 0) >= 85:
+            warnings.append(self.t(f"Disco muy lleno: {disk.get('usage_percent')}% usado.", f"Disk is nearly full: {disk.get('usage_percent')}% used."))
         nl()
 
         if not self.servers:
-            warn(f"No remote servers configured in {SERVERS_FILE}")
+            warn(self.t(f"No hay servidores remotos configurados en {SERVERS_FILE}", f"No remote servers configured in {SERVERS_FILE}"))
+            warnings.append(self.t("No hay servidores remotos configurados en servers.json.", "No remote servers are configured in servers.json."))
         else:
             for server in self.servers:
                 host = str(server.get("host", ""))
                 if host == "1.2.3.4":
-                    warn(f"Placeholder host still present in servers.json for {server.get('name', 'server')}")
+                    warn(self.t(f"Placeholder host todavía presente en servers.json para {server.get('name', 'server')}", f"Placeholder host still present in servers.json for {server.get('name', 'server')}"))
+                    warnings.append(self.t(f"Placeholder host en servers.json para {server.get('name', 'server')}.", f"Placeholder host remains in servers.json for {server.get('name', 'server')}."))
                 else:
-                    ok(f"Remote server configured: {server.get('name', host)} -> {host}")
+                    ok(self.t(f"Servidor remoto configurado: {server.get('name', host)} -> {host}", f"Remote server configured: {server.get('name', host)} -> {host}"))
+
+        nl()
+        section(self.t("Resumen de Doctor", "Doctor Summary"))
+        if warnings:
+            for item in warnings:
+                warn(item)
+        else:
+            ok(self.t("No encontré fallos críticos ocultos. El host está listo para migración guiada.", "I did not find hidden critical failures. The host is ready for guided migration."))
 
     def build_host_drift_report(
         self,
@@ -3649,48 +3797,88 @@ class OmniCore:
         restore_script_output: str = "",
     ):
         print_logo(compact=True)
-        section("Portable Briefcase")
-        selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile)
-        effective_home_root = home_root or manifest.get("host_root") or str(Path.home())
-        report = scan_home(effective_home_root, manifest)
-        full_inventory = collect_full_inventory(home_root=effective_home_root) if full else None
-        briefcase = build_briefcase_manifest(
-            manifest,
-            detect_platform_info(),
-            inventory_report=report,
-            full_inventory=full_inventory,
+        section(self.t("Maleta portable", "Portable briefcase"))
+
+        with Spinner(self.t("Leyendo manifest y perfil activo...", "Reading manifest and active profile..."), color=C.PRIMARY) as spinner:
+            selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile)
+            effective_home_root = home_root or manifest.get("host_root") or str(Path.home())
+            spinner.finish(self.t("Manifest resuelto", "Manifest resolved"), success=True)
+
+        self._briefcase_step(
+            self.t("1. Analizando estado del host", "1. Scanning host state"),
+            self.t(f"Manifest: {selected_path}", f"Manifest: {selected_path}"),
         )
+        with Spinner(self.t("Clasificando estado, secretos y ruido...", "Classifying state, secrets and noise..."), color=C.PRIMARY) as spinner:
+            report = scan_home(effective_home_root, manifest)
+            spinner.finish(self.t("Inventario base listo", "Base inventory ready"), success=True)
+
+        full_inventory = None
+        if full:
+            self._briefcase_step(
+                self.t("2. Recolectando inventario completo", "2. Collecting full inventory"),
+                self.t("Paquetes, runtimes, VS Code, Docker y señales portables.", "Packages, runtimes, VS Code, Docker and portable signals."),
+            )
+            with Spinner(self.t("Recolectando paquetes y runtimes...", "Collecting packages and runtimes..."), color=C.PRIMARY) as spinner:
+                full_inventory = collect_full_inventory(home_root=effective_home_root)
+                spinner.finish(self.t("Inventario completo listo", "Full inventory ready"), success=True)
+
+        self._briefcase_step(
+            self.t("3. Construyendo la maleta", "3. Building the briefcase"),
+            self.t("Generando contrato portable y restore script.", "Generating portable contract and restore script."),
+        )
+        with Spinner(self.t("Empaquetando metadata portable...", "Packing portable metadata..."), color=C.PRIMARY) as spinner:
+            briefcase = build_briefcase_manifest(
+                manifest,
+                detect_platform_info(),
+                inventory_report=report,
+                full_inventory=full_inventory,
+            )
+            spinner.finish(self.t("Maleta construida", "Briefcase built"), success=True)
 
         summary = briefcase["inventory"]["summary"]
+        default_output, default_restore = self.default_briefcase_paths()
+        resolved_output = Path(output).expanduser() if output else default_output
+        restore_path = Path(restore_script_output).expanduser() if restore_script_output else default_restore
+        if output and not restore_script_output:
+            restore_path = resolved_output.with_name(resolved_output.stem + ".restore.sh")
+
+        self._briefcase_step(
+            self.t("4. Escribiendo artefactos", "4. Writing artifacts"),
+            self.t(f"Salida: {resolved_output}", f"Output: {resolved_output}"),
+        )
+        if self.is_dry_run():
+            warn(self.t("Dry run activo: no se escribieron archivos.", "Dry run active: no files were written."))
+        else:
+            resolved_output.parent.mkdir(parents=True, exist_ok=True)
+            resolved_output.write_text(json.dumps(briefcase, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            restore_path.parent.mkdir(parents=True, exist_ok=True)
+            restore_path.write_text(build_restore_script(briefcase, fresh_server=True), encoding="utf-8")
+            restore_path.chmod(0o755)
+            ok(self.t(f"Maleta guardada en {resolved_output}", f"Briefcase saved to {resolved_output}"))
+            ok(self.t(f"Restore script guardado en {restore_path}", f"Restore script saved to {restore_path}"))
+
         kv("Manifest", str(selected_path))
-        kv("Profile", str(briefcase["source"]["profile"]), color=C.GRN)
-        kv("Source System", str(briefcase["source"]["platform"].get("system", "unknown")), color=C.GRN)
-        kv("Package Manager", str(briefcase["source"]["platform"].get("package_manager", "unknown")), color=C.GRN)
-        kv("State Paths", str(summary["included_state_count"]), color=C.GRN)
-        kv("Secret Paths", str(summary["included_secret_count"]), color=C.YLW if summary["included_secret_count"] else C.GRN)
-        kv("Products", str(summary["discovered_product_count"]), color=C.GRN)
-        kv("Noise", str(summary["discovered_noise_count"]), color=C.YLW if summary["discovered_noise_count"] else C.GRN)
+        kv(self.t("Perfil", "Profile"), str(briefcase["source"]["profile"]), color=C.GRN)
+        kv(self.t("Sistema origen", "Source System"), str(briefcase["source"]["platform"].get("system", "unknown")), color=C.GRN)
+        kv(self.t("Gestor de paquetes", "Package Manager"), str(briefcase["source"]["platform"].get("package_manager", "unknown")), color=C.GRN)
+        kv(self.t("Paths de estado", "State Paths"), str(summary["included_state_count"]), color=C.GRN)
+        kv(self.t("Paths secretos", "Secret Paths"), str(summary["included_secret_count"]), color=C.YLW if summary["included_secret_count"] else C.GRN)
+        kv(self.t("Productos", "Products"), str(summary["discovered_product_count"]), color=C.GRN)
+        kv(self.t("Ruido", "Noise"), str(summary["discovered_noise_count"]), color=C.YLW if summary["discovered_noise_count"] else C.GRN)
         if full_inventory:
             counts = full_inventory.get("counts") or {}
-            kv("System Packages", str(counts.get("system_packages", 0)), color=C.GRN)
-            kv("Python Packages", str(counts.get("python_packages", 0)), color=C.GRN)
-            kv("Node Global", str(counts.get("node_global_packages", 0)), color=C.GRN)
-            kv("VS Code Ext", str(counts.get("vscode_extensions", 0)), color=C.GRN)
+            kv(self.t("Paquetes del sistema", "System Packages"), str(counts.get("system_packages", 0)), color=C.GRN)
+            kv(self.t("Paquetes Python", "Python Packages"), str(counts.get("python_packages", 0)), color=C.GRN)
+            kv(self.t("Node global", "Node Global"), str(counts.get("node_global_packages", 0)), color=C.GRN)
+            kv(self.t("Extensiones VS Code", "VS Code Ext"), str(counts.get("vscode_extensions", 0)), color=C.GRN)
+        kv(self.t("Archivo de maleta", "Briefcase File"), str(resolved_output), color=C.GRN)
+        kv(self.t("Restore script", "Restore Script"), str(restore_path), color=C.GRN)
         nl()
-        hint("GitHub queda como metadata/control plane. El payload real debe viajar por SSH/SFTP/rsync.")
-
-        if output:
-            self.write_json_output(briefcase, output)
-            if full:
-                restore_path = Path(restore_script_output or output).expanduser()
-                if restore_path == Path(output).expanduser():
-                    restore_path = restore_path.with_name(restore_path.stem + ".restore.sh")
-                restore_path.parent.mkdir(parents=True, exist_ok=True)
-                restore_path.write_text(build_restore_script(briefcase, fresh_server=True), encoding="utf-8")
-                restore_path.chmod(0o755)
-                ok(f"Restore script saved to {restore_path}")
-            return
-        print(json.dumps(briefcase, indent=2, ensure_ascii=False))
+        hint(self.t("GitHub queda como metadata/control plane. El payload real debe viajar por SSH/SFTP/rsync.", "GitHub stays as metadata/control plane. The real payload should move over SSH/SFTP/rsync."))
+        bullet(self.t("Siguiente paso: usa `omni connect` para mover la maleta al destino.", "Next: use `omni connect` to move the briefcase to the target host."), C.GRN)
+        bullet(self.t("En el destino: ejecuta `omni restore` o `omni migrate sync restore`.", "On the target: run `omni restore` or `omni migrate sync restore`."), C.GRN)
+        if not self.is_dry_run():
+            self._offer_github_briefcase_sync(resolved_output, profile=profile)
 
     def show_restore_plan(
         self,
@@ -4200,6 +4388,7 @@ def main():
     parser.add_argument("--restore-script", type=str, default="", help="Path for the generated restore shell script")
     parser.add_argument("--full", action="store_true", help="Capture the full maleta inventory and emit a restore script")
     parser.add_argument("--repo", type=str, default="", help="GitHub repo slug (owner/repo) for auth/push/pull flows")
+    parser.add_argument("--language", type=str, default="", help="UI language preference (es|en)")
     parser.add_argument("--host", type=str, default="", help="SSH destination host for omni connect")
     parser.add_argument("--user", type=str, default="", help="SSH user for omni connect")
     parser.add_argument("--port", type=int, default=22, help="SSH port for omni connect")
@@ -4284,7 +4473,7 @@ def main():
                 fail("Source and destination required")
                 hint("Usage: omni transfer <src> <dest>")
         elif action == "config":
-            core.show_config()
+            core.config_cmd(remaining[0] if remaining else "", value=args.language or (remaining[1] if len(remaining) > 1 else ""))
         elif action == "connect":
             core.connect_cmd(
                 host=args.host,

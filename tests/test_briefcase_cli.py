@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,51 @@ CLI_PATH = REPO_ROOT / "src" / "omni_core.py"
 
 
 class BriefcaseCliTests(unittest.TestCase):
+    def test_briefcase_without_output_writes_default_export_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            home_root = tmp_root / "home" / "ubuntu"
+            manifest_path = tmp_root / "config" / "system_manifest.json"
+            omni_home = tmp_root / ".omni"
+            export_dir = omni_home / "exports"
+
+            (home_root / "workspace").mkdir(parents=True)
+            (home_root / "workspace" / "README.md").write_text("omni\n", encoding="utf-8")
+            (home_root / ".bashrc").write_text("export OMNI=1\n", encoding="utf-8")
+
+            env = {key: value for key, value in os.environ.items() if not key.startswith("OMNI_")}
+            env["OMNI_HOME"] = str(omni_home)
+            env["OMNI_EXPORT_DIR"] = str(export_dir)
+            env["OMNI_LOG_DIR"] = str(omni_home / "logs")
+            env["OMNI_CONFIG_DIR"] = str(tmp_root / "config")
+
+            briefcase = subprocess.run(
+                [
+                    "python3",
+                    str(CLI_PATH),
+                    "briefcase",
+                    "--full",
+                    "--manifest",
+                    str(manifest_path),
+                    "--home-root",
+                    str(home_root),
+                    "--profile",
+                    "production-clean",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(briefcase.returncode, 0, msg=briefcase.stderr or briefcase.stdout)
+            json_exports = list(export_dir.glob("*-briefcase.json"))
+            restore_exports = list(export_dir.glob("*-briefcase.restore.sh"))
+            self.assertEqual(len(json_exports), 1)
+            self.assertEqual(len(restore_exports), 1)
+            payload = json.loads(json_exports[0].read_text(encoding="utf-8"))
+            self.assertEqual(payload["kind"], "omni-briefcase")
+
     def test_briefcase_and_restore_plan_commands_write_json_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)

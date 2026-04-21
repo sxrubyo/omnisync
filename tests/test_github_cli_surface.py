@@ -16,6 +16,21 @@ import omni_core  # noqa: E402
 
 
 class GitHubCliSurfaceTests(unittest.TestCase):
+    def test_config_cmd_language_persists_global_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            global_config = tmp_root / ".omni" / "config.json"
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(omni_core, "GLOBAL_CONFIG_FILE", global_config))
+                stack.enter_context(mock.patch("omni_core.print_logo"))
+                stack.enter_context(mock.patch("omni_core.section"))
+                core = omni_core.OmniCore()
+                core.config_cmd("language", value="en")
+
+            payload = json.loads(global_config.read_text(encoding="utf-8"))
+            self.assertEqual(payload["language"], "en")
+
     def test_auth_cmd_github_persists_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
