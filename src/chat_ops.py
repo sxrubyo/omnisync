@@ -174,10 +174,9 @@ def build_chat_request(
 
     if protocol == "openai-compatible":
         url = _join_url(base_url, "/chat/completions")
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         payload = {"model": model, "messages": trimmed, "temperature": 0.4}
         return {"url": url, "headers": headers, "body": json.dumps(payload).encode("utf-8")}
 

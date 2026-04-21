@@ -15,8 +15,11 @@ from agent_ops import env_has_value, get_provider, provider_catalog, save_agent_
 class AgentOpsTests(unittest.TestCase):
     def test_provider_catalog_exposes_expected_options(self):
         keys = {provider.key for provider in provider_catalog()}
+        self.assertIn("openai-direct", keys)
         self.assertIn("claude-direct", keys)
         self.assertIn("gemini-direct", keys)
+        self.assertIn("mistral-direct", keys)
+        self.assertIn("ollama-local", keys)
         self.assertIn("openrouter", keys)
         self.assertIn("qwen-intl", keys)
         self.assertIn("custom-openai", keys)

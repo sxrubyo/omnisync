@@ -30,11 +30,22 @@ from bundle_ops import (
 )
 from briefcase_ops import build_briefcase_manifest, build_restore_plan, build_restore_script
 from agent_ops import env_has_value, get_provider, load_agent_config, provider_catalog, save_agent_config, upsert_env_value
+from agent_skill_ops import ensure_agent_skill_bridges
 from bridge_ops import (
     build_host_rewrite_context,
     load_capture_summary,
     summarize_bundle_pair,
     write_capture_summary,
+)
+from chat_ops import (
+    chat_completion,
+    clean_assistant_output,
+    ensure_activation_prompt,
+    load_chat_session,
+    load_env_value,
+    new_chat_session,
+    parse_action_block,
+    save_chat_session,
 )
 from cli_ux_ops import collect_host_snapshot, render_command_header, render_human_error
 from cleanup_ops import build_purge_plan, execute_purge
@@ -91,6 +102,9 @@ LOG_DIR = _path_override("OMNI_LOG_DIR", OMNI_HOME / "logs")
 WATCH_STATE_FILE = _path_override("OMNI_WATCH_STATE_FILE", STATE_DIR / "watch_snapshot.json")
 ENV_FILE = _path_override("OMNI_ENV_FILE", OMNI_HOME / ".env")
 AGENT_CONFIG_FILE = _path_override("OMNI_AGENT_CONFIG_FILE", CONFIG_DIR / "omni_agent.json")
+AGENT_SKILL_DIR = _path_override("OMNI_AGENT_SKILL_DIR", Path.home() / ".omni" / "skills")
+CHAT_SESSION_DIR = _path_override("OMNI_CHAT_SESSION_DIR", STATE_DIR / "chat")
+AGENT_ACTIVATION_FILE = _path_override("OMNI_AGENT_ACTIVATION_FILE", CONFIG_DIR / "omni_agent_activation.txt")
 TASKS_FILE = _path_override("OMNI_TASKS_FILE", OMNI_HOME / "tasks.json")
 REPOS_FILE = _path_override("OMNI_REPOS_FILE", CONFIG_DIR / "repos.json")
 SERVERS_FILE = _path_override("OMNI_SERVERS_FILE", CONFIG_DIR / "servers.json")
@@ -255,6 +269,7 @@ ALIASES = {
     "bc": "briefcase",
     "rp": "restore-plan",
     "g": "guide",
+    "ch": "chat",
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1742,9 +1757,16 @@ class OmniCore:
         print_logo(compact=True)
         section("Omni Agent")
         config = load_agent_config(AGENT_CONFIG_FILE)
+        runtimes = ensure_agent_skill_bridges(AGENT_SKILL_DIR)
         if not config:
             warn("Omni Agent todavía no está configurado.")
             hint("Usa `omni agent` para elegir proveedor y guardar la configuración.")
+            nl()
+            section("Agent Runtimes")
+            for runtime in runtimes:
+                status = "ready" if runtime.installed else "skill-only"
+                color = C.GRN if runtime.installed else C.YLW
+                kv(runtime.title, status, color=color, key_width=18)
             return
 
         provider = get_provider(str(config.get("provider", "")))
@@ -1761,15 +1783,35 @@ class OmniCore:
         if config.get("notes"):
             dim(str(config.get("notes")))
         nl()
+        section("Agent Runtimes")
+        for runtime in runtimes:
+            status = "ready" if runtime.installed else "skill-only"
+            color = C.GRN if runtime.installed else C.YLW
+            label = runtime.version or runtime.command
+            kv(runtime.title, f"{status} :: {label}", color=color, key_width=18)
+        nl()
 
     def agent_cmd(self, subaction: str = "", *, accept_all: bool = False):
         normalized = str(subaction or "").strip().lower()
         if normalized in {"status", "show"}:
             self.show_agent_status()
             return
+        if normalized in {"chat", "talk"}:
+            self.chat_cmd()
+            return
 
         print_logo(compact=True)
         section("Omni Agent")
+        runtimes = ensure_agent_skill_bridges(AGENT_SKILL_DIR)
+        render_action_summary(
+            "Agent Runtimes",
+            [
+                f"{runtime.title}: {'ready' if runtime.installed else 'skill-only'}"
+                + (f" · {runtime.version}" if runtime.version else "")
+                for runtime in runtimes
+            ],
+            accent=C.GRN,
+        )
         current = load_agent_config(AGENT_CONFIG_FILE)
         if current:
             info("Configuración actual detectada.")
@@ -1871,6 +1913,171 @@ class OmniCore:
             ],
             accent=C.PRIMARY,
         )
+        hint("Usa `omni chat` para hablar con el agente y permitirle ejecutar comandos `omni` en tu nombre.")
+
+    def run_agent_omni_command(self, command: str) -> Dict[str, Any]:
+        normalized = " ".join(str(command or "").strip().split())
+        if not normalized.startswith("omni "):
+            return {"success": False, "error": "Omni Agent solo puede ejecutar comandos que empiecen por `omni `."}
+
+        argv = shlex.split(normalized)
+        if self.is_dry_run():
+            return {"success": True, "stdout": "", "stderr": "", "returncode": 0, "command": normalized, "dry_run": True}
+
+        result = subprocess.run(
+            [sys.executable, str(APP_DIR / "src" / "omni_core.py"), *argv[1:]],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(APP_DIR),
+        )
+        return {
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "command": normalized,
+            "dry_run": False,
+        }
+
+    def chat_cmd(self, prompt: str = "", *, accept_all: bool = False) -> None:
+        print_logo(compact=True)
+        section("Omni Chat")
+        config = load_agent_config(AGENT_CONFIG_FILE)
+        if not config:
+            render_human_error(
+                "Omni Agent todavía no está configurado.",
+                suggestion="Ejecuta `omni agent` primero para elegir proveedor, modelo y API key.",
+            )
+            return
+
+        ensure_agent_skill_bridges(AGENT_SKILL_DIR)
+        activation_text = ensure_activation_prompt(AGENT_ACTIVATION_FILE)
+        api_key = load_env_value(ENV_FILE, str(config.get("env_var", "")))
+        if not api_key and str(config.get("provider")) != "ollama-local":
+            render_human_error(
+                f"Falta la credencial para {config.get('provider_title', config.get('provider', 'Omni Agent'))}.",
+                suggestion=f"Guarda {config.get('env_var', 'la API key')} con `omni agent` y vuelve a intentar.",
+            )
+            return
+
+        CHAT_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        latest_session = max(CHAT_SESSION_DIR.glob("chat-*.json"), default=None, key=lambda path: path.stat().st_mtime if path.exists() else 0)
+        if latest_session:
+            session = load_chat_session(latest_session)
+        else:
+            session = new_chat_session(
+                CHAT_SESSION_DIR,
+                provider_title=str(config.get("provider_title", config.get("provider", "Omni Agent"))),
+                model=str(config.get("model", "")),
+                base_url=str(config.get("base_url", "")),
+                provider_key=str(config.get("provider", "")),
+                protocol=str(config.get("protocol", "")),
+                activation_file=str(AGENT_ACTIVATION_FILE),
+            )
+        session_path = Path(session["path"])
+        if not any(msg.get("role") == "system" for msg in session.get("messages", [])):
+            session.setdefault("messages", []).insert(0, {"role": "system", "content": activation_text})
+
+        user_prompt = prompt.strip()
+        if not user_prompt and self.is_interactive():
+            user_prompt = self.prompt_text("Pregunta para Omni Agent", "resume el estado del host y dime el siguiente paso")
+        if not user_prompt:
+            render_human_error(
+                "Falta el prompt para la sesión de chat.",
+                suggestion="Usa `omni chat \"tu pregunta\"` o abre un TTY interactivo.",
+            )
+            return
+
+        session.setdefault("messages", []).append({"role": "user", "content": user_prompt})
+        try:
+            with Spinner("Consultando Omni Agent...", color=C.PRIMARY) as spinner:
+                completion = chat_completion(
+                    protocol=str(config.get("protocol", "")),
+                    base_url=str(config.get("base_url", "")),
+                    model=str(config.get("model", "")),
+                    api_key=api_key,
+                    messages=session["messages"],
+                )
+                spinner.finish("Respuesta recibida", success=True)
+        except Exception as err:
+            render_human_error(
+                f"El proveedor del agente devolvió un error: {err}",
+                suggestion="Revisa base URL, API key y modelo configurado en `omni agent`.",
+            )
+            return
+
+        raw_text = str(completion.get("text", "")).strip()
+        action = parse_action_block(raw_text)
+        clean_text = clean_assistant_output(raw_text)
+        if clean_text:
+            print(clean_text)
+            nl()
+        session["messages"].append({"role": "assistant", "content": raw_text})
+        save_chat_session(session_path, session)
+
+        if not action:
+            return
+
+        if action.get("type") != "command":
+            render_action_summary(
+                str(action.get("title", "Siguiente paso")),
+                [str(item) for item in action.get("items", [])] or [clean_text or "Sin detalle adicional"],
+                accent=C.PRIMARY,
+            )
+            return
+
+        command = str(action.get("command", "")).strip()
+        if not command:
+            return
+        render_action_summary(
+            str(action.get("title", "Comando sugerido")),
+            [command, "Solo se ejecutan comandos que empiecen por `omni `."],
+            accent=C.YLW,
+        )
+        confirm = bool(action.get("confirm", True))
+        should_run = accept_all or not confirm or self.confirm_step("¿Ejecuto este comando ahora?", default=False)
+        if not should_run:
+            warn("Comando sugerido, pero no ejecutado.")
+            return
+
+        result = self.run_agent_omni_command(command)
+        if not result.get("success"):
+            render_human_error(
+                str(result.get("stderr") or result.get("error") or "La ejecución del comando falló."),
+                suggestion="Verifica el comando sugerido o reintenta con un paso más específico.",
+            )
+            return
+
+        output_lines = (str(result.get("stdout", "")) or "Comando ejecutado sin salida visible.").strip().splitlines()
+        render_action_summary(
+            "Comando ejecutado",
+            [f"Command: {command}", *output_lines[:8]],
+            accent=C.GRN,
+        )
+        session["messages"].append(
+            {
+                "role": "user",
+                "content": "Resultado del comando:\n" + (str(result.get("stdout", "")) or str(result.get("stderr", "")) or "Sin salida"),
+            }
+        )
+        try:
+            follow_up = chat_completion(
+                protocol=str(config.get("protocol", "")),
+                base_url=str(config.get("base_url", "")),
+                model=str(config.get("model", "")),
+                api_key=api_key,
+                messages=session["messages"]
+                + [{"role": "user", "content": "Explica el resultado anterior en pocas líneas y sugiere el siguiente paso operativo."}],
+            )
+            follow_up_text = clean_assistant_output(str(follow_up.get("text", "")).strip())
+            if follow_up_text:
+                nl()
+                render_action_summary("Siguiente paso", follow_up_text.splitlines()[:8], accent=C.PRIMARY)
+                session["messages"].append({"role": "assistant", "content": str(follow_up.get("text", "")).strip()})
+        except Exception:
+            pass
+        save_chat_session(session_path, session)
 
     def show_help(self):
         """Show help menu."""
@@ -1890,7 +2097,9 @@ class OmniCore:
         bullet("Crear respaldo real  -> omni capture --profile full-home", C.GRN)
         dim("Luego saca `backups/host-bundles` fuera del host actual.")
         bullet("Configurar Omni Agent  -> omni agent", C.GRN)
-        dim("Selector visual para Claude, Gemini, OpenRouter, Qwen o endpoint compatible.")
+        dim("Selector visual para Claude, GPT, Gemini, Mistral, Ollama o endpoint compatible.")
+        bullet("Hablar con Omni Agent  -> omni chat \"resume el host\"", C.GRN)
+        dim("Puede ejecutar comandos `omni`, explicar salida y proponer el siguiente paso.")
         bullet("Abrir el launchpad operativo  -> omni guide", C.GRN)
         dim("Menú con flechas, ETA y acceso a Connect / Briefcase / Restore / Agent.")
         nl()
@@ -1913,6 +2122,7 @@ class OmniCore:
         bullet("omni briefcase - Build the portable migration contract", C.GRN)
         bullet("omni restore-plan - Derive the target-side restore sequence", C.GRN)
         bullet("omni migrate sync - Use the new migration family around the briefcase contract", C.GRN)
+        bullet("omni chat      - Talk to Omni Agent and let it run safe `omni` actions", C.GRN)
         nl()
 
         print("  " + q(C.W, "ADVANCED COMMANDS", bold=True))
@@ -1942,6 +2152,7 @@ class OmniCore:
         bullet("omni detect-ip - Detect current host identity", C.PRIMARY)
         bullet("omni rewrite-ip - Rewrite old host references safely", C.PRIMARY)
         bullet("omni agent     - Configure Omni Agent provider and model", C.PRIMARY)
+        bullet("omni chat      - Run the conversational agent surface", C.PRIMARY)
         bullet("omni bridge    - Create/send/receive migration packs", C.PRIMARY)
         bullet("omni timer-install - Install daily timer + change watcher service", C.PRIMARY)
         bullet("omni purge - Delete transferred state and repo artifacts to free disk", C.PRIMARY)
@@ -1965,11 +2176,13 @@ class OmniCore:
         bullet("--manifest      System manifest path", C.G3)
         bullet("--profile       Manifest profile (production-clean|full-home)", C.G3)
         bullet("--output        Output file or directory", C.G3)
+        bullet("--restore-script  Output path for generated restore shell script", C.G3)
         bullet("--bundle        Explicit state bundle path", C.G3)
         bullet("--secrets       Explicit secrets bundle path", C.G3)
         bullet("--target-root   Restore target root", C.G3)
         bullet("--passphrase-env  Env var containing secrets passphrase", C.G3)
         bullet("--dry-run       Preview changes without mutating host or remote target", C.G3)
+        bullet("--full          Capture the full maleta inventory and restore script", C.G3)
         bullet("--yes           Confirm destructive purge", C.G3)
         bullet("--include-secrets  Include secret paths in purge", C.G3)
         nl()
@@ -3617,6 +3830,8 @@ def main():
             core.show_status()
         elif action == "guide":
             core.guide_cmd()
+        elif action == "chat":
+            core.chat_cmd(" ".join(remaining), accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
         elif action == "doctor":
             core.show_doctor()
         elif action == "logs":
