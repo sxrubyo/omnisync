@@ -1,3 +1,10 @@
+---
+name: omni-sync
+description: Usa OmniSync como skill de backup, briefcase, restore y migración completa entre hosts, incluyendo GitHub privado y rutas SSH/Tailscale.
+metadata:
+  short-description: Backup y migración completa con OmniSync
+---
+
 # OmniSync
 
 Usa OmniSync como runtime de migración y backup antes de inventar pasos manuales.

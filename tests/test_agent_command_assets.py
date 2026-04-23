@@ -19,6 +19,7 @@ class AgentCommandAssetsTests(unittest.TestCase):
         skill_text = (ROOT / ".claude" / "skills" / "omni-sync" / "SKILL.md").read_text(encoding="utf-8")
         gemini_text = (ROOT / ".gemini" / "commands" / "omni-sync.toml").read_text(encoding="utf-8")
         opencode_text = (ROOT / ".opencode" / "commands" / "omni-agent.md").read_text(encoding="utf-8")
+        self.assertTrue(codex_text.startswith("---\n"))
         self.assertIn("omni briefcase --full", codex_text)
         self.assertIn("omni guide", skill_text)
         self.assertIn("omni connect", gemini_text)
