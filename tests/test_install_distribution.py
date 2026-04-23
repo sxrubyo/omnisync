@@ -25,6 +25,8 @@ class InstallDistributionTests(unittest.TestCase):
         self.assertIn("Paramiko habilita conexiones SSH por contraseña", contents)
         self.assertIn("zipfile.ZipFile", contents)
         self.assertNotIn("Expand-Archive -Path $ZipPath -DestinationPath $TempRoot -Force", contents)
+        self.assertIn('if any(not part.strip() for part in rel_parts):', contents)
+        self.assertIn('if any(part != part.rstrip(" .") for part in rel_parts):', contents)
 
     def test_readme_mentions_windows_install_command(self) -> None:
         contents = README.read_text(encoding="utf-8")

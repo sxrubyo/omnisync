@@ -173,6 +173,10 @@ with zipfile.ZipFile(zip_path) as archive:
             continue
         rel_path = PurePosixPath(*rel_parts)
         rel_str = rel_path.as_posix()
+        if any(not part.strip() for part in rel_parts):
+            continue
+        if any(part != part.rstrip(" .") for part in rel_parts):
+            continue
         if rel_parts[0] in exclude_roots:
             continue
         if rel_str in exclude_paths:
