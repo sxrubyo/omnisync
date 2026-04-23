@@ -2999,6 +2999,7 @@ class OmniCore:
         key_path: str = "",
         remote_path: str = "",
         transport: str = "rsync",
+        route: str = "",
         target_system: str = "",
         auth_mode: str = "",
         password_env: str = "OMNI_SSH_PASSWORD",
@@ -3026,6 +3027,7 @@ class OmniCore:
                 manifest_path,
                 home_root,
                 profile,
+                route,
                 auth_mode,
                 target_system,
                 remote_path,
@@ -3064,6 +3066,7 @@ class OmniCore:
                 key_path = str(pending_params.get("key_path", key_path))
                 remote_path = str(pending_params.get("remote_path", remote_path))
                 transport = str(pending_params.get("transport", transport or "auto"))
+                route = str(pending_params.get("route", route))
                 target_system = str(pending_params.get("target_system", target_system))
                 auth_mode = str(pending_params.get("auth_mode", auth_mode))
                 password_env = str(pending_params.get("password_env", password_env))
@@ -3079,6 +3082,7 @@ class OmniCore:
                 key_path = str(pending_params.get("key_path", key_path))
                 remote_path = str(pending_params.get("remote_path", remote_path))
                 transport = str(pending_params.get("transport", transport or "auto"))
+                route = str(pending_params.get("route", route))
                 target_system = str(pending_params.get("target_system", target_system))
                 auth_mode = str(pending_params.get("auth_mode", auth_mode))
                 password_env = str(pending_params.get("password_env", password_env))
@@ -3091,11 +3095,38 @@ class OmniCore:
             else:
                 self.clear_continue_state("connect")
 
+        resolved_route = str(route or "").strip().lower().replace("-", "_")
+        if not resolved_route and host and not edit_saved_connection:
+            resolved_route = "direct"
+        if self.is_interactive() and not resolved_route:
+            route_options = [
+                ("tailscale", "Tailscale / MagicDNS", "Recomendado si ambos hosts están en la misma tailnet. Usa IP 100.x o nombre MagicDNS."),
+                ("direct", "Directo (IP pública / LAN)", "Usa IP pública, IP privada de la LAN o DNS normal cuando ya existe ruta directa."),
+            ]
+            selected_route = select_menu(
+                [title for _, title, _ in route_options],
+                title=self.t("¿Cómo quieres llegar al host remoto?", "How do you want to reach the remote host?"),
+                descriptions=[description for _, _, description in route_options],
+                icons=["🪄", "🌐"],
+                default=0,
+                show_index=True,
+                footer=self.t("↑/↓ elegir ruta · Enter confirmar", "↑/↓ choose path · Enter confirm"),
+            )
+            resolved_route = route_options[selected_route][0]
+        if resolved_route not in {"", "direct", "tailscale"}:
+            resolved_route = "direct"
+
         resolved_target_system = normalize_remote_system(target_system)
-        host_prompt = self.t(
-            "Destino SSH (host o IP, opcional :puerto)",
-            "SSH destination (host or IP, optional :port)",
-        )
+        if resolved_route == "tailscale":
+            host_prompt = self.t(
+                "Destino Tailscale (100.x o MagicDNS, opcional :puerto)",
+                "Tailscale destination (100.x or MagicDNS, optional :port)",
+            )
+        else:
+            host_prompt = self.t(
+                "Destino SSH (host o IP, opcional :puerto)",
+                "SSH destination (host or IP, optional :port)",
+            )
         explicit_port_provided = port is not None
         default_host_value = host
         if host and explicit_port_provided and int(port or 22) != 22 and ":" not in host and not host.endswith("]"):
@@ -3138,7 +3169,8 @@ class OmniCore:
             auth_options = [
                 ("password", "Contraseña", "Solo pide host, usuario y contraseña. Ideal para mover rápido a otro host."),
                 ("agent", "SSH Agent / clave cargada", "Usa la identidad ya cargada en ssh-agent o el método por defecto del sistema."),
-                ("key", "SSH Key (recomendado)", "Usa una clave privada local sin pedir passphrase adicional."),
+                ("key", "Llave OpenSSH / PEM", "Ideal para AWS, Ubuntu cloud y la mayoría de servidores Linux modernos."),
+                ("ppk", "PuTTY .ppk", "Útil en Windows/PuTTY. Omni intentará convertirla o te guiará paso a paso."),
             ]
             default_auth_index = 0
             for index, (value, _, _) in enumerate(auth_options):
@@ -3149,7 +3181,7 @@ class OmniCore:
                 [title for _, title, _ in auth_options],
                 title="Método de conexión SSH",
                 descriptions=[description for _, _, description in auth_options],
-                icons=["🔑", "🪪", "🗝️"],
+                icons=["🔑", "🪪", "🗝️", "🧷"],
                 default=default_auth_index,
                 show_index=True,
                 footer="↑/↓ elegir método · Enter confirmar · número salto directo",
@@ -3165,17 +3197,55 @@ class OmniCore:
         resolved_key_path = str(Path(key_path).expanduser()) if key_path else ""
         resolved_password: str | None = os.environ.get(password_env, "").strip() if password_env else ""
 
-        if resolved_auth_mode == "key":
+        checkpoint_key_path = str(Path(key_path).expanduser()) if key_path else ""
+        identity_display = ""
+
+        if resolved_auth_mode in {"key", "ppk"}:
             if not resolved_key_path:
-                resolved_key_path = self.prompt_text("Ruta de clave SSH", default_key)
+                prompt_label = "Ruta de llave (.pem / OpenSSH / .ppk)"
+                resolved_key_path = self.prompt_text(prompt_label, default_key)
             key_file = Path(resolved_key_path).expanduser()
             if not key_file.exists() or key_file.is_dir():
                 render_human_error(
                     "La ruta indicada no parece una clave privada SSH válida.",
-                    suggestion="Elige `Contraseña` si quieres conectar solo con host, usuario y contraseña.",
+                    suggestion="Elige `Contraseña`, `SSH Agent / clave cargada` o una ruta válida a `.pem`, OpenSSH o `.ppk`.",
                 )
                 return
+            checkpoint_key_path = str(key_file)
             resolved_key_path = str(key_file)
+            identity_display = resolved_key_path
+            if resolved_auth_mode == "ppk" or resolved_key_path.lower().endswith(".ppk"):
+                puttygen_bin = shutil.which("puttygen") or shutil.which("puttygen.exe")
+                if puttygen_bin:
+                    temp_key_dir = Path(tempfile.mkdtemp(prefix="omni-ppk-"))
+                    converted_key = temp_key_dir / f"{key_file.stem}.openssh"
+                    conversion = subprocess.run(
+                        [puttygen_bin, str(key_file), "-O", "private-openssh", "-o", str(converted_key)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if conversion.returncode != 0 or not converted_key.exists():
+                        render_human_error(
+                            "No pude convertir la llave `.ppk` a OpenSSH automáticamente.",
+                            suggestion=self.t(
+                                "Abre PuTTYgen -> Conversions -> Export OpenSSH key, o instala `puttygen` que soporte `-O private-openssh`.",
+                                "Open PuTTYgen -> Conversions -> Export OpenSSH key, or install `puttygen` with `-O private-openssh` support.",
+                            ),
+                        )
+                        return
+                    resolved_key_path = str(converted_key)
+                    identity_display = f"{checkpoint_key_path} -> OpenSSH temporal"
+                else:
+                    render_human_error(
+                        "La llave `.ppk` necesita convertirse a OpenSSH antes de usar Paramiko.",
+                        suggestion=self.t(
+                            "PuTTY docs: load the `.ppk` in PuTTYgen y usa Conversions -> Export OpenSSH key. Luego vuelve con esa ruta.",
+                            "PuTTY docs: load the `.ppk` in PuTTYgen and use Conversions -> Export OpenSSH key. Then come back with that file path.",
+                        ),
+                    )
+                    return
+            resolved_auth_mode = "key"
             resolved_password = None
         elif resolved_auth_mode == "agent":
             resolved_key_path = ""
@@ -3217,7 +3287,8 @@ class OmniCore:
             "host": target.host,
             "user": target.user,
             "port": target.port,
-            "key_path": target.key_path,
+            "key_path": checkpoint_key_path,
+            "route": resolved_route or "direct",
             "auth_mode": resolved_auth_mode,
             "password_env": password_env,
             "target_system": resolved_target_system or "auto",
@@ -3230,12 +3301,13 @@ class OmniCore:
         }
         self.save_continue_state(flow="connect", status="probe_pending", params=checkpoint_params)
         kv("Target", target.target(), color=C.GRN)
+        kv("Route", resolved_route or "direct", color=C.GRN)
         kv("Remote OS", resolved_target_system or "auto", color=C.GRN)
         kv("Transport", "paramiko+sftp", color=C.GRN)
         kv("Remote Path", remote_path or "~/omni-transfer", color=C.GRN)
         kv("Auth", resolved_auth_mode, color=C.GRN)
         if target.key_path:
-            kv("Identity", target.key_path, color=C.GRN)
+            kv("Identity", identity_display or target.key_path, color=C.GRN)
         elif resolved_auth_mode == "agent":
             kv("Identity", self.t("ssh-agent / identidad por defecto", "ssh-agent / default identity"), color=C.GRN)
         elif resolved_auth_mode == "password":
@@ -3405,18 +3477,22 @@ class OmniCore:
                 render_human_error(
                     f"No se pudo inspeccionar el host remoto: {err_text}",
                     suggestion=self.t(
-                        "Ese servidor parece aceptar solo `publickey`. Opciones: 1) cambia a `SSH Agent / clave cargada`; 2) usa una clave `.pem` o OpenSSH; 3) habilita `PasswordAuthentication yes` en el relay si controlas ese host.",
-                        "That server appears to accept only `publickey`. Options: 1) switch to `SSH Agent / loaded key`; 2) use a `.pem` or OpenSSH private key; 3) enable `PasswordAuthentication yes` on the relay if you control that host.",
+                        "Ese servidor parece aceptar solo `publickey`. Opciones: 1) cambia a `SSH Agent / clave cargada`; 2) usa una llave `.pem` o OpenSSH; 3) si solo tienes `.ppk`, conviértela con PuTTYgen; 4) Tailscale suele ser la ruta recomendada si ambos nodos la tienen.",
+                        "That server appears to accept only `publickey`. Options: 1) switch to `SSH Agent / loaded key`; 2) use a `.pem` or OpenSSH private key; 3) if you only have a `.ppk`, convert it with PuTTYgen; 4) Tailscale is usually the recommended route if both nodes have it.",
                     ),
                 )
                 return
             elif not recovered_via_tunnel:
+                extra_hint = self.t(
+                    " Si ambos nodos tienen Tailscale, prueba esa ruta primero.",
+                    " If both nodes run Tailscale, try that route first.",
+                ) if resolved_route != "tailscale" else ""
                 self.save_continue_state(flow="connect", status="probe_failed", params=checkpoint_params, error=str(err))
                 render_human_error(
                     f"No se pudo inspeccionar el host remoto: {err}",
                     suggestion=self.t(
-                        "Sigue así: 1) ejecuta `omni continue` y elige `Editar conexión guardada`; 2) corrige host, puerto, usuario o auth; 3) si el host usa OpenSSH en Windows, puedes pasar `--target-system windows`; 4) si el destino está detrás de NAT, usa `Preparar túnel inverso`.",
-                        "Next steps: 1) run `omni continue` and choose `Edit saved connection`; 2) fix host, port, user or auth; 3) if the host runs OpenSSH on Windows, you can pass `--target-system windows`; 4) if the target sits behind NAT, use `Prepare reverse tunnel`.",
+                        "Sigue así: 1) ejecuta `omni continue` y elige `Editar conexión guardada`; 2) corrige host, puerto, usuario o auth; 3) si el host usa OpenSSH en Windows, puedes pasar `--target-system windows`; 4) si el destino está detrás de NAT, usa `Preparar túnel inverso`." + extra_hint,
+                        "Next steps: 1) run `omni continue` and choose `Edit saved connection`; 2) fix host, port, user or auth; 3) if the host runs OpenSSH on Windows, you can pass `--target-system windows`; 4) if the target sits behind NAT, use `Prepare reverse tunnel`." + extra_hint,
                     ),
                 )
                 return
