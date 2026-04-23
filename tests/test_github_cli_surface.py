@@ -118,6 +118,60 @@ class GitHubCliSurfaceTests(unittest.TestCase):
             self.assertTrue((output_dir / "20260421-120000-host.json").exists())
             self.assertTrue((output_dir / "20260421-120000-host.restore.sh").exists())
 
+    def test_continue_cmd_replays_saved_connect_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            continue_file = tmp_root / ".omni" / "state" / "continue.json"
+            continue_file.parent.mkdir(parents=True, exist_ok=True)
+            continue_file.write_text(
+                json.dumps(
+                    {
+                        "flow": "connect",
+                        "status": "probe_failed",
+                        "params": {
+                            "host": "192.168.0.3",
+                            "user": "u0_a332",
+                            "port": 8022,
+                            "key_path": "",
+                            "remote_path": "~/omni-transfer",
+                            "transport": "sftp",
+                            "target_system": "posix",
+                            "auth_mode": "password",
+                            "password_env": "OMNI_SSH_PASSWORD",
+                            "briefcase_path": "",
+                            "manifest_path": "/tmp/manifest.json",
+                            "home_root": "/home/ubuntu",
+                            "profile": "full-home",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(omni_core, "CONTINUE_STATE_FILE", continue_file))
+                stack.enter_context(mock.patch("omni_core.print_logo"))
+                stack.enter_context(mock.patch("omni_core.info"))
+                connect_mock = stack.enter_context(mock.patch.object(omni_core.OmniCore, "connect_cmd"))
+                core = omni_core.OmniCore()
+                core.continue_cmd()
+
+            connect_mock.assert_called_once_with(
+                host="192.168.0.3",
+                user="u0_a332",
+                port=8022,
+                key_path="",
+                remote_path="~/omni-transfer",
+                transport="sftp",
+                target_system="posix",
+                auth_mode="password",
+                password_env="OMNI_SSH_PASSWORD",
+                briefcase_path="",
+                manifest_path="/tmp/manifest.json",
+                home_root="/home/ubuntu",
+                profile="full-home",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

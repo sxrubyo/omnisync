@@ -132,6 +132,7 @@ REPOS_FILE = _path_override("OMNI_REPOS_FILE", CONFIG_DIR / "repos.json")
 SERVERS_FILE = _path_override("OMNI_SERVERS_FILE", CONFIG_DIR / "servers.json")
 SYSTEM_MANIFEST_FILE = _path_override("OMNI_MANIFEST_FILE", CONFIG_DIR / "system_manifest.json")
 EXPORT_DIR = _path_override("OMNI_EXPORT_DIR", OMNI_HOME / "exports")
+CONTINUE_STATE_FILE = _path_override("OMNI_CONTINUE_STATE_FILE", STATE_DIR / "continue.json")
 AUTO_BACKUP_ON_CHANGE = os.environ.get("OMNI_AUTO_BACKUP_ON_CHANGE", "1").strip().lower() in {"1", "true", "yes", "on"}
 AUTO_BACKUP_KEEP = max(1, int(os.environ.get("OMNI_AUTO_BACKUP_KEEP", "5")))
 WATCH_BACKUP_COOLDOWN = max(30, int(os.environ.get("OMNI_WATCH_BACKUP_COOLDOWN", "600")))
@@ -302,6 +303,8 @@ ALIASES = {
     "g": "guide",
     "ch": "chat",
     "commands": "help",
+    "resume": "continue",
+    "cont": "continue",
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1273,6 +1276,111 @@ class OmniCore:
         if not self.is_dry_run():
             save_global_config(GLOBAL_CONFIG_FILE, payload)
         return normalized
+
+    def load_continue_state(self) -> Dict[str, Any]:
+        if not CONTINUE_STATE_FILE.exists():
+            return {}
+        try:
+            payload = json.loads(CONTINUE_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def pending_continue_state(self, flow: str = "") -> Dict[str, Any]:
+        payload = self.load_continue_state()
+        if not payload:
+            return {}
+        if flow and payload.get("flow") != flow:
+            return {}
+        if payload.get("status") in {"completed", "cancelled"}:
+            return {}
+        return payload
+
+    def save_continue_state(
+        self,
+        *,
+        flow: str,
+        status: str,
+        params: Dict[str, Any] | None = None,
+        context: Dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "flow": flow,
+            "status": status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if params:
+            payload["params"] = params
+        if context:
+            payload["context"] = context
+        if error:
+            payload["error"] = error
+        if self.is_dry_run():
+            return
+        CONTINUE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CONTINUE_STATE_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def clear_continue_state(self, flow: str = "") -> None:
+        if not CONTINUE_STATE_FILE.exists():
+            return
+        if flow:
+            payload = self.load_continue_state()
+            if payload.get("flow") != flow:
+                return
+        if not self.is_dry_run():
+            CONTINUE_STATE_FILE.unlink(missing_ok=True)
+
+    def continue_cmd(self) -> None:
+        print_logo(compact=True)
+        state = self.pending_continue_state()
+        if not state:
+            render_human_error(
+                self.t("No hay una operación pendiente para reanudar.", "There is no pending operation to resume."),
+                suggestion=self.t(
+                    "Empieza con `omni guide` o `omni connect` y Omni guardará el punto de avance.",
+                    "Start with `omni guide` or `omni connect` and Omni will save your progress point.",
+                ),
+            )
+            return
+
+        flow = str(state.get("flow", "")).strip().lower()
+        params = state.get("params") if isinstance(state.get("params"), dict) else {}
+        info(
+            self.t(
+                f"Reanudando `{flow}` desde `{state.get('status', 'pending')}`.",
+                f"Resuming `{flow}` from `{state.get('status', 'pending')}`.",
+            )
+        )
+
+        if flow == "connect":
+            self.connect_cmd(
+                host=str(params.get("host", "")),
+                user=str(params.get("user", "")),
+                port=int(params.get("port", 22) or 22),
+                key_path=str(params.get("key_path", "")),
+                remote_path=str(params.get("remote_path", "")),
+                transport=str(params.get("transport", "auto")),
+                target_system=str(params.get("target_system", "")),
+                auth_mode=str(params.get("auth_mode", "")),
+                password_env=str(params.get("password_env", "OMNI_SSH_PASSWORD")),
+                briefcase_path=str(params.get("briefcase_path", "")),
+                manifest_path=str(params.get("manifest_path", "")),
+                home_root=str(params.get("home_root", "")),
+                profile=str(params.get("profile", "")),
+            )
+            return
+
+        render_human_error(
+            self.t(
+                f"Todavía no puedo reanudar automáticamente el flujo `{flow}`.",
+                f"I cannot resume the `{flow}` flow automatically yet.",
+            ),
+            suggestion=self.t(
+                "Vuelve a abrir el flujo desde `omni guide` o ejecuta el comando principal otra vez.",
+                "Open the flow again from `omni guide` or run the primary command again.",
+            ),
+        )
 
     def default_briefcase_paths(self) -> tuple[Path, Path]:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -2496,6 +2604,8 @@ class OmniCore:
         dim("Puede ejecutar comandos `omni`, explicar salida y proponer el siguiente paso.")
         bullet("Abrir el launchpad operativo  -> omni guide", C.GRN)
         dim("Menú con flechas, ETA y acceso a SSH Connect / Maleta / Restore / Agent.")
+        bullet("Retomar el último paso  -> omni continue", C.GRN)
+        dim("Reutiliza el último intento guardado de SSH Connect sin pedirte todo de nuevo.")
         nl()
 
         section("OmniSync - Command Reference")
@@ -2512,8 +2622,9 @@ class OmniCore:
         bullet("omni restore   - Restore from latest bundle + secrets", C.GRN)
         bullet("omni migrate   - Rebuild this host end to end", C.GRN)
         bullet("omni guide     - Open the interactive Omni launchpad", C.GRN)
+        bullet("omni continue  - Resume the last saved guided operation", C.GRN)
         bullet("omni commands  - Show this command center explicitly", C.GRN)
-        bullet("omni connect   - Probe a remote Linux host and send the migration payload", C.GRN)
+        bullet("omni connect   - Probe a remote host and send the migration payload", C.GRN)
         bullet("omni briefcase - Build the portable migration contract", C.GRN)
         dim("    Guarda la maleta y el restore script en ~/.omni/exports aunque no pases --output.")
         bullet("omni restore-plan - Derive the target-side restore sequence", C.GRN)
@@ -2749,7 +2860,7 @@ class OmniCore:
         else:
             recommended_idx = next((idx for idx, option in enumerate(flow_options) if option.recommended), 0)
             labels = [option.title for option in flow_options]
-            icons = ["🛫", "📦", "♻️", "🚚", "🩺", "🧠", "⚙️"]
+            icons = ["🛫", "📦", "♻️", "🚚", "🩺", "🧠", "⚙️", "🧰"]
             descriptions = []
             for option in flow_options:
                 suffix = " Recomendado en este host." if option.recommended else ""
@@ -2869,6 +2980,59 @@ class OmniCore:
         )
         section("Conexión remota")
 
+        pending_state = self.pending_continue_state("connect")
+        has_explicit_overrides = any(
+            [
+                host,
+                user,
+                key_path,
+                briefcase_path,
+                manifest_path,
+                home_root,
+                profile,
+                auth_mode,
+                target_system,
+                remote_path,
+            ]
+        )
+        if pending_state and self.is_interactive() and not has_explicit_overrides:
+            pending_params = pending_state.get("params") if isinstance(pending_state.get("params"), dict) else {}
+            selected_resume = select_menu(
+                [
+                    self.t("Reanudar conexión guardada", "Resume saved connection"),
+                    self.t("Empezar una conexión nueva", "Start a new connection"),
+                ],
+                title=self.t("Encontré una conexión pendiente", "I found a pending connection"),
+                descriptions=[
+                    self.t(
+                        f"Retoma {pending_params.get('user', '')}@{pending_params.get('host', '')}:{pending_params.get('port', 22)} sin volver a teclear host, usuario o puerto.",
+                        f"Resume {pending_params.get('user', '')}@{pending_params.get('host', '')}:{pending_params.get('port', 22)} without typing host, user or port again.",
+                    ),
+                    self.t("Descarta el checkpoint actual y vuelve a comenzar.", "Discard the current checkpoint and start over."),
+                ],
+                icons=["🧭", "🆕"],
+                default=0,
+                show_index=True,
+                footer=self.t("↑/↓ elegir ruta · Enter confirmar", "↑/↓ choose path · Enter confirm"),
+            )
+            if selected_resume == 0:
+                host = str(pending_params.get("host", host))
+                user = str(pending_params.get("user", user))
+                port = int(pending_params.get("port", port) or port)
+                key_path = str(pending_params.get("key_path", key_path))
+                remote_path = str(pending_params.get("remote_path", remote_path))
+                transport = str(pending_params.get("transport", transport or "auto"))
+                target_system = str(pending_params.get("target_system", target_system))
+                auth_mode = str(pending_params.get("auth_mode", auth_mode))
+                password_env = str(pending_params.get("password_env", password_env))
+                briefcase_path = str(pending_params.get("briefcase_path", briefcase_path))
+                manifest_path = str(pending_params.get("manifest_path", manifest_path))
+                home_root = str(pending_params.get("home_root", home_root))
+                profile = str(pending_params.get("profile", profile))
+                info(self.t("Reanudo el último intento guardado.", "Resuming the last saved attempt."))
+            else:
+                self.clear_continue_state("connect")
+
         resolved_target_system = normalize_remote_system(target_system)
         if self.is_interactive() and not target_system:
             system_options = [
@@ -2923,6 +3087,7 @@ class OmniCore:
 
         resolved_key_path = str(Path(key_path).expanduser()) if key_path else ""
         resolved_password = os.environ.get(password_env, "").strip() if password_env else ""
+        sshpass_available = bool(shutil.which("sshpass"))
 
         if resolved_auth_mode == "key":
             if not resolved_key_path:
@@ -2936,13 +3101,23 @@ class OmniCore:
                 return
             resolved_key_path = str(key_file)
         elif resolved_auth_mode == "password":
-            if not resolved_password and self.is_interactive():
+            if self.is_dry_run():
+                resolved_password = resolved_password or ""
+            elif not sshpass_available and self.is_interactive():
+                resolved_password = ""
+                info(
+                    self.t(
+                        "No detecté `sshpass`; usaré el prompt nativo de `ssh` para pedir la contraseña durante la conexión.",
+                        "I did not detect `sshpass`; I will use the native `ssh` prompt to request the password during connection.",
+                    )
+                )
+            elif not resolved_password and self.is_interactive():
                 try:
                     resolved_password = getpass.getpass("Contraseña SSH: ").strip()
                 except KeyboardInterrupt:
                     print()
                     raise
-            if not resolved_password:
+            if not self.is_dry_run() and not resolved_password:
                 render_human_error(
                     "No recibí una contraseña SSH para el modo password.",
                     suggestion=f"Exporta `{password_env}` o usa `SSH Agent / clave cargada`.",
@@ -2990,6 +3165,22 @@ class OmniCore:
             password=resolved_password,
             target_system=resolved_target_system,
         )
+        checkpoint_params = {
+            "host": target.host,
+            "user": target.user,
+            "port": target.port,
+            "key_path": target.key_path,
+            "auth_mode": resolved_auth_mode,
+            "password_env": password_env,
+            "target_system": resolved_target_system or "auto",
+            "remote_path": remote_path or "~/omni-transfer",
+            "transport": resolved_transport,
+            "briefcase_path": briefcase_path,
+            "manifest_path": manifest_path,
+            "home_root": home_root,
+            "profile": profile or FULL_HOME_PROFILE,
+        }
+        self.save_continue_state(flow="connect", status="probe_pending", params=checkpoint_params)
         kv("Target", target.target(), color=C.GRN)
         kv("Remote OS", resolved_target_system or "auto", color=C.GRN)
         kv("Transport", resolved_transport, color=C.GRN)
@@ -2998,7 +3189,12 @@ class OmniCore:
         if target.key_path:
             kv("Identity", target.key_path, color=C.GRN)
         elif resolved_auth_mode == "password":
-            kv("Identity", f"password via {password_env}", color=C.GRN)
+            identity_hint = (
+                f"password via {password_env}"
+                if resolved_password
+                else self.t("prompt interactivo de ssh", "interactive ssh prompt")
+            )
+            kv("Identity", identity_hint, color=C.GRN)
         nl()
 
         if self.is_dry_run():
@@ -3006,15 +3202,31 @@ class OmniCore:
             return
 
         try:
+            info(self.t("Paso 1/3 · Validando acceso SSH y detectando el host remoto.", "Step 1/3 · Validating SSH access and detecting the remote host."))
             with Spinner("Sondeando host remoto...", color=C.PRIMARY) as spinner:
-                remote = probe_remote_host(target, timeout=12 if resolved_target_system == "auto" else 20)
+                probe_timeout = 45 if resolved_auth_mode == "password" else (12 if resolved_target_system == "auto" else 20)
+                remote = probe_remote_host(target, timeout=probe_timeout)
                 spinner.finish("Host remoto detectado", success=True)
         except Exception as err:
+            self.save_continue_state(flow="connect", status="probe_failed", params=checkpoint_params, error=str(err))
             render_human_error(
                 f"No se pudo inspeccionar el host remoto: {err}",
-                suggestion="Verifica reachability SSH, SO remoto, puerto, usuario y modo de autenticación. Si el destino es Windows/OpenSSH, selecciona `Windows / PowerShell` y usa SFTP.",
+                suggestion=self.t(
+                    "Sigue así: 1) ejecuta `omni continue` para reutilizar este destino; 2) si el host es Termux/Linux, elige `Linux / macOS / WSL`; 3) si usas contraseña y no quieres automatizarla, vuelve a intentar en una terminal interactiva; 4) si quieres automatización, instala `sshpass` o cambia a `SSH Agent / clave privada`.",
+                    "Next steps: 1) run `omni continue` to reuse this destination; 2) if the host is Termux/Linux, choose `Linux / macOS / WSL`; 3) if you use a password and do not need automation, retry in an interactive terminal; 4) if you want automation, install `sshpass` or switch to `SSH Agent / private key`.",
+                ),
             )
             return
+
+        if not remote.get("rsync_available", False) and resolved_transport in {"auto", "rsync"}:
+            warn(
+                self.t(
+                    "No vi `rsync` en el host remoto. Cambio automáticamente a SFTP para que la transferencia no se corte.",
+                    "I did not find `rsync` on the remote host. Automatically switching to SFTP so the transfer does not fail.",
+                )
+            )
+            resolved_transport = "sftp"
+            checkpoint_params["transport"] = resolved_transport
 
         freshness = "Servidor limpio" if remote.get("fresh_server") else ("Host Windows existente" if remote.get("system_family") == "windows" else "Host Unix existente")
         render_action_summary(
@@ -3025,15 +3237,23 @@ class OmniCore:
                 f"Entradas en HOME: {remote.get('home_entries', 0)}",
                 f"Repos Git: {remote.get('git_repos', 0)}",
                 f"Paquetes instalados: {remote.get('package_count', 0)}",
+                f"rsync remoto: {'sí' if remote.get('rsync_available') else 'no'}",
                 f"Heurística: {freshness}",
             ],
             accent=C.GRN if remote.get("fresh_server") else C.YLW,
+        )
+        self.save_continue_state(
+            flow="connect",
+            status="transfer_pending",
+            params=checkpoint_params,
+            context={"remote": remote},
         )
 
         sources: List[str] = []
         if briefcase_path:
             sources.append(str(Path(briefcase_path).expanduser()))
         else:
+            info(self.t("Paso 2/3 · Generando la maleta y el restore script para el destino.", "Step 2/3 · Building the briefcase and restore script for the target."))
             selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile or FULL_HOME_PROFILE)
             report = scan_home(home_root or manifest.get("host_root") or str(Path.home()), manifest)
             effective_home_root = home_root or manifest.get("host_root") or str(Path.home())
@@ -3062,6 +3282,7 @@ class OmniCore:
             sources.append(str(latest_secrets))
 
         try:
+            info(self.t("Paso 3/3 · Enviando la maleta al host remoto.", "Step 3/3 · Sending the briefcase to the remote host."))
             with Spinner("Transfiriendo payload...", color=C.PRIMARY) as spinner:
                 result = transfer_payload(
                     sources,
@@ -3071,19 +3292,34 @@ class OmniCore:
                 )
                 spinner.finish("Transferencia terminada", success=result.get("success", False))
         except Exception as err:
+            self.save_continue_state(flow="connect", status="transfer_failed", params=checkpoint_params, context={"remote": remote}, error=str(err))
             render_human_error(
                 f"La transferencia falló: {err}",
-                suggestion="Prueba `--protocol sftp` si rsync no está disponible en alguno de los dos extremos.",
+                suggestion=self.t(
+                    "Sigue así: 1) ejecuta `omni continue` para reintentar con este mismo destino; 2) si el host remoto no tiene rsync, usa o deja `SFTP`; 3) si el destino es Windows/OpenSSH, marca `Windows / PowerShell`.",
+                    "Next steps: 1) run `omni continue` to retry with the same destination; 2) if the remote host does not have rsync, use or keep `SFTP`; 3) if the target is Windows/OpenSSH, choose `Windows / PowerShell`.",
+                ),
             )
             return
 
         if not result.get("success"):
+            self.save_continue_state(
+                flow="connect",
+                status="transfer_failed",
+                params=checkpoint_params,
+                context={"remote": remote, "transport": result.get("transport", resolved_transport)},
+                error=result.get("stderr") or result.get("stdout") or "SSH transfer failed",
+            )
             render_human_error(
                 result.get("stderr") or result.get("stdout") or "SSH transfer failed",
-                suggestion="Verifica permisos del destino y que el directorio remoto exista o pueda crearse.",
+                suggestion=self.t(
+                    "Sigue así: 1) ejecuta `omni continue` para reusar este destino; 2) valida permisos del directorio remoto; 3) si terminas en Termux o Windows/OpenSSH, SFTP suele ser la ruta más robusta.",
+                    "Next steps: 1) run `omni continue` to reuse this destination; 2) validate permissions on the remote directory; 3) if the target is Termux or Windows/OpenSSH, SFTP is usually the most robust path.",
+                ),
             )
             return
 
+        self.clear_continue_state("connect")
         render_action_summary(
             "Payload enviado",
             [
@@ -3161,7 +3397,7 @@ class OmniCore:
         if not tool_checks["gh"] and not github_cfg.get("token"):
             warnings.append(self.t("No hay sesión de GitHub ni token guardado; la maleta no podrá subirse automáticamente.", "There is no GitHub session or saved token; the briefcase cannot be uploaded automatically."))
         if not tool_checks["sshpass"]:
-            warnings.append(self.t("No está `sshpass`; la autenticación SSH por contraseña no se puede automatizar.", "`sshpass` is missing; password-based SSH cannot be automated."))
+            warnings.append(self.t("No está `sshpass`; la contraseña SSH seguirá funcionando solo con prompt interactivo.", "`sshpass` is missing; password-based SSH will only work with an interactive prompt."))
         if mem.get("available_mb", 0) and mem.get("available_mb", 0) < 1024:
             warnings.append(self.t(f"Memoria disponible baja: {mem.get('available_mb')} MB.", f"Low available memory: {mem.get('available_mb')} MB."))
         if disk.get("usage_percent", 0) and disk.get("usage_percent", 0) >= 85:
@@ -4438,6 +4674,8 @@ def main():
             core.show_status()
         elif action == "guide":
             core.guide_cmd()
+        elif action == "continue":
+            core.continue_cmd()
         elif action == "chat":
             core.chat_cmd(" ".join(remaining), accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
         elif action == "auth":

@@ -23,11 +23,12 @@ from connect_ops import (  # noqa: E402
 class ConnectOpsTests(unittest.TestCase):
     def test_parse_remote_probe_output_detects_fresh_server(self):
         payload = parse_remote_probe_output(
-            "system=Linux\npackage_manager=apt-get\nhome_entries=2\ngit_repos=0\npackage_count=80\nfresh_server=true\n"
+            "system=Linux\npackage_manager=apt-get\nhome_entries=2\ngit_repos=0\npackage_count=80\nfresh_server=true\nrsync_available=true\n"
         )
         self.assertEqual(payload["system"], "Linux")
         self.assertEqual(payload["package_manager"], "apt-get")
         self.assertTrue(payload["fresh_server"])
+        self.assertTrue(payload["rsync_available"])
 
     def test_build_rsync_command_uses_ssh_port_and_identity(self):
         destination = SSHDestination(host="example.com", user="ubuntu", port=2222, key_path="/tmp/id_ed25519")
@@ -63,6 +64,33 @@ class ConnectOpsTests(unittest.TestCase):
         self.assertEqual(payload["system_family"], "windows")
         self.assertEqual(payload["system"], "Windows")
         self.assertEqual(len(calls), 2)
+
+    def test_probe_remote_host_password_mode_uses_interactive_prompt_without_sshpass(self):
+        captured = {}
+
+        def fake_runner(command, **kwargs):
+            captured["command"] = command
+            stdout_file = kwargs["stdout"]
+            stdout_file.write(
+                "system=Linux\npackage_manager=apt-get\nhome_entries=1\ngit_repos=0\npackage_count=10\nfresh_server=true\nrsync_available=false\n"
+            )
+            return SimpleNamespace(returncode=0, stderr="")
+
+        destination = SSHDestination(
+            host="example.com",
+            user="ubuntu",
+            auth_mode="password",
+            password="",
+            target_system="linux",
+        )
+
+        with patch("connect_ops.shutil.which", side_effect=lambda name: None if name == "sshpass" else "/usr/bin/" + name), \
+             patch("connect_ops._can_prompt_interactively", return_value=True):
+            payload = probe_remote_host(destination, runner=fake_runner, timeout=5)
+
+        self.assertEqual(payload["system_family"], "posix")
+        self.assertFalse(payload["rsync_available"])
+        self.assertEqual(captured["command"][0], "ssh")
 
     def test_transfer_payload_auto_prefers_sftp_for_windows_and_wraps_sshpass(self):
         captured = {}
