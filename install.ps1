@@ -281,6 +281,7 @@ if (-not ($PathParts | Where-Object { $_ -eq $BinDir })) {
 $env:Path = "$BinDir;$env:Path"
 
 Write-Step "Validating OmniSync"
+& $WrapperCmd init | Out-Null
 & $WrapperCmd help | Out-Null
 & $WrapperCmd commands | Out-Null
 $ResolvedOmni = (Get-Command omni -ErrorAction Stop).Source

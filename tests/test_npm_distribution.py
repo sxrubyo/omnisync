@@ -34,6 +34,7 @@ class NpmDistributionTests(unittest.TestCase):
         self.assertTrue(payload)
         first = payload[0]
         files = {item["path"] for item in first.get("files", [])}
+        self.assertIn(".codex/skills/omni-sync/SKILL.md", files)
         self.assertIn("package.json", files)
         self.assertIn("npm/omni.js", files)
         self.assertIn("install.sh", files)

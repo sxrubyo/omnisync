@@ -64,6 +64,8 @@ omni
 
 The interactive guide takes it from there.
 
+During install, OmniSync also detects Codex, Claude Code, Gemini CLI and OpenCode on the current machine and injects the OmniSync skill/command assets automatically when their home directories are present.
+
 ---
 
 ## Core Commands
@@ -129,6 +131,7 @@ omni chat           # talk to agent, run omni commands
 Supported providers: **Claude**, **GPT-4**, **Gemini**, **Mistral**, **Ollama** (local), any OpenAI-compatible endpoint.
 
 Skills and command files are pre-configured for:
+- `.codex/skills/omni-sync/SKILL.md`
 - `.claude/skills/omni-sync/SKILL.md`
 - `.gemini/commands/omni-sync.toml`
 - `.opencode/commands/omni-sync.md`

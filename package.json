@@ -24,6 +24,7 @@
     "config/systemd/*.timer",
     "bin/omni",
     "npm/omni.js",
+    ".codex/skills/omni-sync/SKILL.md",
     ".claude/skills/omni-sync/SKILL.md",
     ".gemini/commands/omni-sync.toml",
     ".gemini/commands/omni-agent.toml",

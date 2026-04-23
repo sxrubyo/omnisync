@@ -5,7 +5,11 @@
 !.claude/skills/omni-sync/
 !.claude/skills/omni-sync/SKILL.md
 .claude/handoffs/
-.codex
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/omni-sync/
+!.codex/skills/omni-sync/SKILL.md
 config/repos.json
 config/servers.json
 config/system_manifest.json

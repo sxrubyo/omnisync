@@ -31,7 +31,7 @@ from bundle_ops import (
 )
 from briefcase_ops import build_briefcase_manifest, build_restore_plan, build_restore_script
 from agent_ops import env_has_value, get_provider, load_agent_config, provider_catalog, save_agent_config, upsert_env_value
-from agent_skill_ops import ensure_agent_skill_bridges
+from agent_skill_ops import sync_agent_integrations
 from bridge_ops import (
     build_host_rewrite_context,
     load_capture_summary,
@@ -2054,7 +2054,9 @@ class OmniCore:
         print_logo(compact=True)
         section("Omni Agent")
         config = load_agent_config(AGENT_CONFIG_FILE)
-        runtimes = ensure_agent_skill_bridges(AGENT_SKILL_DIR)
+        sync_report = sync_agent_integrations(AGENT_SKILL_DIR, home_root=Path.home(), repo_root=OMNI_HOME)
+        runtimes = sync_report["runtimes"]
+        integrations = sync_report["integrations"]
         if not config:
             warn("Omni Agent todavía no está configurado.")
             hint("Usa `omni agent` para elegir proveedor y guardar la configuración.")
@@ -2064,6 +2066,12 @@ class OmniCore:
                 status = "ready" if runtime.installed else "skill-only"
                 color = C.GRN if runtime.installed else C.YLW
                 kv(runtime.title, status, color=color, key_width=18)
+            nl()
+            section("Injected Integrations")
+            for integration in integrations:
+                state = "linked" if integration.written else ("detected" if integration.detected else "missing")
+                color = C.GRN if integration.written else (C.YLW if integration.detected else C.G3)
+                kv(integration.title, state, color=color, key_width=18)
             return
 
         provider = get_provider(str(config.get("provider", "")))
@@ -2087,6 +2095,12 @@ class OmniCore:
             label = runtime.version or runtime.command
             kv(runtime.title, f"{status} :: {label}", color=color, key_width=18)
         nl()
+        section("Injected Integrations")
+        for integration in integrations:
+            state = "linked" if integration.written else ("detected" if integration.detected else "missing")
+            color = C.GRN if integration.written else (C.YLW if integration.detected else C.G3)
+            kv(integration.title, state, color=color, key_width=18)
+        nl()
 
     def agent_cmd(self, subaction: str = "", *, accept_all: bool = False):
         normalized = str(subaction or "").strip().lower()
@@ -2099,7 +2113,9 @@ class OmniCore:
 
         print_logo(compact=True)
         section("Omni Agent")
-        runtimes = ensure_agent_skill_bridges(AGENT_SKILL_DIR)
+        sync_report = sync_agent_integrations(AGENT_SKILL_DIR, home_root=Path.home(), repo_root=OMNI_HOME)
+        runtimes = sync_report["runtimes"]
+        integrations = sync_report["integrations"]
         render_action_summary(
             "Agent Runtimes",
             [
@@ -2109,6 +2125,9 @@ class OmniCore:
             ],
             accent=C.GRN,
         )
+        linked_total = sum(len(item.written) for item in integrations)
+        if linked_total:
+            info(f"Sincronicé {linked_total} assets de agentes detectados en tu home.")
         current = load_agent_config(AGENT_CONFIG_FILE)
         if current:
             info("Configuración actual detectada.")
@@ -2248,7 +2267,7 @@ class OmniCore:
             )
             return
 
-        ensure_agent_skill_bridges(AGENT_SKILL_DIR)
+        sync_agent_integrations(AGENT_SKILL_DIR, home_root=Path.home(), repo_root=OMNI_HOME)
         activation_text = ensure_activation_prompt(AGENT_ACTIVATION_FILE)
         api_key = load_env_value(ENV_FILE, str(config.get("env_var", "")))
         if not api_key and str(config.get("provider")) != "ollama-local":
@@ -2835,6 +2854,11 @@ class OmniCore:
         if workspace_changed and AUTO_BACKUP_ON_CHANGE:
             info("Creando backup automático post-init...")
             self.run_backup(profile=requested_profile or profile)
+
+        sync_report = sync_agent_integrations(AGENT_SKILL_DIR, home_root=Path.home(), repo_root=OMNI_HOME)
+        linked_targets = sum(len(item.written) for item in sync_report["integrations"])
+        if linked_targets:
+            ok(f"Agent integrations refreshed across {linked_targets} target files.")
 
         nl()
         bullet("Next steps", C.PRIMARY, bold=True)

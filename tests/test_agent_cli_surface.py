@@ -70,7 +70,10 @@ class AgentCliSurfaceTests(unittest.TestCase):
                 mock.patch.object(omni_core, "SERVERS_FILE", servers_file),
                 mock.patch.object(omni_core, "SYSTEM_MANIFEST_FILE", manifest_file),
                 mock.patch.object(omni_core, "TASKS_FILE", tasks_file),
-                mock.patch("omni_core.ensure_agent_skill_bridges", return_value=[]),
+                mock.patch(
+                    "omni_core.sync_agent_integrations",
+                    return_value={"runtimes": [], "integrations": [], "metadata_path": str(omni_home / "skills" / "agent-integrations.json")},
+                ),
                 mock.patch("omni_core.render_action_summary"),
                 mock.patch("omni_core.print_logo"),
                 mock.patch("omni_core.section"),

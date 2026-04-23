@@ -21,6 +21,7 @@ class InstallDistributionTests(unittest.TestCase):
         contents = POWERSHELL_INSTALL_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("https://github.com/$RepoSlug/archive/refs/heads/main.zip", contents)
         self.assertIn("omni.cmd", contents)
+        self.assertIn('& $WrapperCmd init | Out-Null', contents)
         self.assertIn("Get-Command omni", contents)
         self.assertIn("Paramiko habilita conexiones SSH por contraseña", contents)
         self.assertIn("zipfile.ZipFile", contents)
