@@ -2975,7 +2975,7 @@ class OmniCore:
         *,
         host: str = "",
         user: str = "",
-        port: int = 22,
+        port: int | None = None,
         key_path: str = "",
         remote_path: str = "",
         transport: str = "rsync",
@@ -3011,11 +3011,13 @@ class OmniCore:
                 remote_path,
             ]
         )
+        edit_saved_connection = False
         if pending_state and self.is_interactive() and not has_explicit_overrides:
             pending_params = pending_state.get("params") if isinstance(pending_state.get("params"), dict) else {}
             selected_resume = select_menu(
                 [
                     self.t("Reanudar conexión guardada", "Resume saved connection"),
+                    self.t("Editar conexión guardada", "Edit saved connection"),
                     self.t("Empezar una conexión nueva", "Start a new connection"),
                 ],
                 title=self.t("Encontré una conexión pendiente", "I found a pending connection"),
@@ -3024,9 +3026,13 @@ class OmniCore:
                         f"Retoma {pending_params.get('user', '')}@{pending_params.get('host', '')}:{pending_params.get('port', 22)} sin volver a teclear host, usuario o puerto.",
                         f"Resume {pending_params.get('user', '')}@{pending_params.get('host', '')}:{pending_params.get('port', 22)} without typing host, user or port again.",
                     ),
+                    self.t(
+                        "Carga host, usuario, puerto y auth anteriores como base, pero te deja corregirlos antes de reconectar.",
+                        "Load the previous host, user, port and auth as defaults, but let you edit them before reconnecting.",
+                    ),
                     self.t("Descarta el checkpoint actual y vuelve a comenzar.", "Discard the current checkpoint and start over."),
                 ],
-                icons=["🧭", "🆕"],
+                icons=["🧭", "✏️", "🆕"],
                 default=0,
                 show_index=True,
                 footer=self.t("↑/↓ elegir ruta · Enter confirmar", "↑/↓ choose path · Enter confirm"),
@@ -3046,6 +3052,22 @@ class OmniCore:
                 home_root = str(pending_params.get("home_root", home_root))
                 profile = str(pending_params.get("profile", profile))
                 info(self.t("Reanudo el último intento guardado.", "Resuming the last saved attempt."))
+            elif selected_resume == 1:
+                host = str(pending_params.get("host", host))
+                user = str(pending_params.get("user", user))
+                port = int(pending_params.get("port", port) or port)
+                key_path = str(pending_params.get("key_path", key_path))
+                remote_path = str(pending_params.get("remote_path", remote_path))
+                transport = str(pending_params.get("transport", transport or "auto"))
+                target_system = str(pending_params.get("target_system", target_system))
+                auth_mode = str(pending_params.get("auth_mode", auth_mode))
+                password_env = str(pending_params.get("password_env", password_env))
+                briefcase_path = str(pending_params.get("briefcase_path", briefcase_path))
+                manifest_path = str(pending_params.get("manifest_path", manifest_path))
+                home_root = str(pending_params.get("home_root", home_root))
+                profile = str(pending_params.get("profile", profile))
+                edit_saved_connection = True
+                info(self.t("Cargo la conexión anterior para que la edites antes de reintentar.", "Loading the previous connection so you can edit it before retrying."))
             else:
                 self.clear_continue_state("connect")
 
@@ -3054,23 +3076,61 @@ class OmniCore:
             "Destino SSH (host o IP, opcional :puerto)",
             "SSH destination (host or IP, optional :port)",
         )
-        resolved_host_raw = host or self.prompt_text(host_prompt, "")
+        explicit_port_provided = port is not None
+        default_host_value = host
+        if host and explicit_port_provided and int(port or 22) != 22 and ":" not in host and not host.endswith("]"):
+            default_host_value = f"{host}:{int(port or 22)}"
+        if self.is_interactive() and edit_saved_connection:
+            resolved_host_raw = self.prompt_text(host_prompt, default_host_value)
+        else:
+            resolved_host_raw = host or self.prompt_text(host_prompt, "")
+        host_includes_port = False
         resolved_host, parsed_port = split_host_and_port(resolved_host_raw, int(port or 22))
-        resolved_user = user or self.prompt_text("Usuario SSH", getpass.getuser())
-        resolved_port = parsed_port
+        raw_host_value = str(resolved_host_raw or "").strip()
+        if raw_host_value.startswith("[") and "]:" in raw_host_value:
+            host_includes_port = True
+        elif raw_host_value.count(":") == 1:
+            host_part, port_part = raw_host_value.rsplit(":", 1)
+            host_includes_port = bool(host_part) and port_part.isdigit()
 
-        resolved_auth_mode = str(auth_mode or ("key" if key_path else "password")).strip().lower()
-        if self.is_interactive() and not auth_mode:
+        default_user = user or getpass.getuser()
+        if self.is_interactive() and edit_saved_connection:
+            resolved_user = self.prompt_text("Usuario SSH", default_user)
+        else:
+            resolved_user = user or self.prompt_text("Usuario SSH", getpass.getuser())
+
+        if self.is_interactive() and (edit_saved_connection or (not host_includes_port and not explicit_port_provided)):
+            raw_port = self.prompt_text("Puerto SSH", str(parsed_port or 22)).strip()
+            try:
+                resolved_port = int(raw_port or parsed_port or 22)
+            except ValueError:
+                render_human_error(
+                    "El puerto SSH debe ser numérico.",
+                    suggestion="Usa un entero como `22`, `2222` o `8022`.",
+                )
+                return
+        else:
+            resolved_port = parsed_port
+
+        default_auth_mode = str(auth_mode or ("key" if key_path else "password")).strip().lower()
+        resolved_auth_mode = default_auth_mode
+        if self.is_interactive() and (not auth_mode or edit_saved_connection):
             auth_options = [
                 ("password", "Contraseña", "Solo pide host, usuario y contraseña. Ideal para mover rápido a otro host."),
+                ("agent", "SSH Agent / clave cargada", "Usa la identidad ya cargada en ssh-agent o el método por defecto del sistema."),
                 ("key", "SSH Key (recomendado)", "Usa una clave privada local sin pedir passphrase adicional."),
             ]
+            default_auth_index = 0
+            for index, (value, _, _) in enumerate(auth_options):
+                if value == resolved_auth_mode:
+                    default_auth_index = index
+                    break
             selected_auth = select_menu(
                 [title for _, title, _ in auth_options],
                 title="Método de conexión SSH",
                 descriptions=[description for _, _, description in auth_options],
-                icons=["🔑", "🗝️"],
-                default=0,
+                icons=["🔑", "🪪", "🗝️"],
+                default=default_auth_index,
                 show_index=True,
                 footer="↑/↓ elegir método · Enter confirmar · número salto directo",
             )
@@ -3097,6 +3157,9 @@ class OmniCore:
                 return
             resolved_key_path = str(key_file)
             resolved_password = None
+        elif resolved_auth_mode == "agent":
+            resolved_key_path = ""
+            resolved_password = None
         else:
             if not resolved_password and self.is_interactive():
                 try:
@@ -3107,7 +3170,7 @@ class OmniCore:
             if not self.is_dry_run() and not resolved_password:
                 render_human_error(
                     "No recibí una contraseña SSH para el modo password.",
-                    suggestion=f"Escríbela cuando Omni la pida o exporta `{password_env}` antes de ejecutar el comando.",
+                    suggestion=f"Escríbela cuando Omni la pida, exporta `{password_env}` o cambia a `SSH Agent / clave cargada`.",
                 )
                 return
             resolved_key_path = ""
@@ -3153,6 +3216,8 @@ class OmniCore:
         kv("Auth", resolved_auth_mode, color=C.GRN)
         if target.key_path:
             kv("Identity", target.key_path, color=C.GRN)
+        elif resolved_auth_mode == "agent":
+            kv("Identity", self.t("ssh-agent / identidad por defecto", "ssh-agent / default identity"), color=C.GRN)
         elif resolved_auth_mode == "password":
             identity_hint = self.t("contraseña SSH", "SSH password")
             kv("Identity", identity_hint, color=C.GRN)
@@ -3173,8 +3238,8 @@ class OmniCore:
             render_human_error(
                 f"No se pudo inspeccionar el host remoto: {err}",
                 suggestion=self.t(
-                    "Sigue así: 1) ejecuta `omni continue` para reutilizar este destino; 2) verifica host, usuario, contraseña y puerto; 3) si usas un puerto distinto, escríbelo como `host:puerto`; 4) si el host usa OpenSSH en Windows, puedes pasar `--target-system windows`.",
-                    "Next steps: 1) run `omni continue` to reuse this destination; 2) verify host, user, password and port; 3) if you use a custom port, enter it as `host:port`; 4) if the host runs OpenSSH on Windows, you can pass `--target-system windows`.",
+                    "Sigue así: 1) ejecuta `omni continue` y elige `Editar conexión guardada`; 2) corrige host, puerto, usuario o auth; 3) si el host usa OpenSSH en Windows, puedes pasar `--target-system windows`.",
+                    "Next steps: 1) run `omni continue` and choose `Edit saved connection`; 2) fix host, port, user or auth; 3) if the host runs OpenSSH on Windows, you can pass `--target-system windows`.",
                 ),
             )
             return
@@ -4571,7 +4636,7 @@ def main():
     parser.add_argument("--language", type=str, default="", help="UI language preference (es|en)")
     parser.add_argument("--host", type=str, default="", help="SSH destination host for omni connect")
     parser.add_argument("--user", type=str, default="", help="SSH user for omni connect")
-    parser.add_argument("--port", type=int, default=22, help="SSH port for omni connect")
+    parser.add_argument("--port", type=int, default=None, help="SSH port for omni connect")
     parser.add_argument("--key-path", type=str, default="", help="Path to SSH identity file")
     parser.add_argument("--auth-mode", type=str, default="", help="SSH auth mode for omni connect (agent|key|password)")
     parser.add_argument("--password-env", type=str, default="OMNI_SSH_PASSWORD", help="Environment variable containing the SSH password")

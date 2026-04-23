@@ -99,6 +99,14 @@ class FakeParamiko:
     AutoAddPolicy = FakeAutoAddPolicy
 
 
+class FakeSocketConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 class ConnectOpsTests(unittest.TestCase):
     def test_normalize_remote_system_accepts_posix(self):
         self.assertEqual(connect_ops.normalize_remote_system("posix"), "posix")
@@ -132,7 +140,9 @@ class ConnectOpsTests(unittest.TestCase):
             ]
         )
 
-        with patch.object(connect_ops, "paramiko", FakeParamiko):
+        with patch.object(connect_ops, "paramiko", FakeParamiko), patch.object(
+            connect_ops.socket, "create_connection", return_value=FakeSocketConnection()
+        ):
             payload = probe_remote_host(
                 SSHDestination(host="example.com", user="ubuntu", password="secret", target_system="auto"),
                 client_factory=lambda: client,
@@ -151,7 +161,9 @@ class ConnectOpsTests(unittest.TestCase):
             ]
         )
 
-        with patch.object(connect_ops, "paramiko", FakeParamiko):
+        with patch.object(connect_ops, "paramiko", FakeParamiko), patch.object(
+            connect_ops.socket, "create_connection", return_value=FakeSocketConnection()
+        ):
             probe_remote_host(
                 SSHDestination(host="example.com", user="ubuntu", password="super-secret", target_system="linux"),
                 client_factory=lambda: client,
@@ -169,7 +181,9 @@ class ConnectOpsTests(unittest.TestCase):
             ]
         )
 
-        with patch.object(connect_ops, "paramiko", FakeParamiko):
+        with patch.object(connect_ops, "paramiko", FakeParamiko), patch.object(
+            connect_ops.socket, "create_connection", return_value=FakeSocketConnection()
+        ):
             probe_remote_host(
                 SSHDestination(host="example.com", user="ubuntu", password=None, key_path="/tmp/id_ed25519", target_system="linux"),
                 client_factory=lambda: client,
@@ -187,7 +201,9 @@ class ConnectOpsTests(unittest.TestCase):
             file_path = Path(tmp) / "briefcase.json"
             file_path.write_text("{}", encoding="utf-8")
 
-            with patch.object(connect_ops, "paramiko", FakeParamiko):
+            with patch.object(connect_ops, "paramiko", FakeParamiko), patch.object(
+                connect_ops.socket, "create_connection", return_value=FakeSocketConnection()
+            ):
                 result = transfer_payload(
                     [str(file_path)],
                     SSHDestination(host="example.com", user="ubuntu", password="secret"),

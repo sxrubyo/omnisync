@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import posixpath
 import shlex
+import socket
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -183,6 +184,23 @@ def _connect_client(
         connect_kwargs["allow_agent"] = True
         if destination.key_path:
             connect_kwargs["key_filename"] = destination.key_path
+
+    preflight_timeout = max(2, min(int(timeout or 10), 6))
+    try:
+        with socket.create_connection(
+            (destination.host, int(destination.port or 22)),
+            timeout=preflight_timeout,
+        ):
+            pass
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"No pude abrir TCP hacia {destination.host}:{destination.port} en {preflight_timeout}s. "
+            "El host no responde desde esta red."
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"No pude abrir TCP hacia {destination.host}:{destination.port}: {exc}"
+        ) from exc
 
     client.connect(**connect_kwargs)
     return client

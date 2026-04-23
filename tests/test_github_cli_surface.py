@@ -172,6 +172,89 @@ class GitHubCliSurfaceTests(unittest.TestCase):
                 profile="full-home",
             )
 
+    def test_connect_cmd_can_edit_saved_connection_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            continue_file = tmp_root / ".omni" / "state" / "continue.json"
+            continue_file.parent.mkdir(parents=True, exist_ok=True)
+            continue_file.write_text(
+                json.dumps(
+                    {
+                        "flow": "connect",
+                        "status": "probe_failed",
+                        "params": {
+                            "host": "192.168.0.3",
+                            "user": "u0_a332",
+                            "port": 8022,
+                            "key_path": "",
+                            "remote_path": "~/omni-transfer",
+                            "transport": "sftp",
+                            "target_system": "posix",
+                            "auth_mode": "password",
+                            "password_env": "OMNI_SSH_PASSWORD",
+                            "briefcase_path": "",
+                            "manifest_path": "",
+                            "home_root": "",
+                            "profile": "full-home",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with tempfile.TemporaryDirectory() as temp_briefcase_dir:
+                briefcase_path = Path(temp_briefcase_dir) / "briefcase.json"
+                briefcase_path.write_text("{}", encoding="utf-8")
+
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(omni_core, "CONTINUE_STATE_FILE", continue_file))
+                    stack.enter_context(mock.patch("omni_core.print_logo"))
+                    stack.enter_context(mock.patch("omni_core.render_command_header"))
+                    stack.enter_context(mock.patch("omni_core.section"))
+                    stack.enter_context(mock.patch("omni_core.kv"))
+                    stack.enter_context(mock.patch("omni_core.nl"))
+                    stack.enter_context(mock.patch("omni_core.info"))
+                    stack.enter_context(mock.patch("omni_core.render_action_summary"))
+                    error_mock = stack.enter_context(mock.patch("omni_core.render_human_error"))
+                    stack.enter_context(mock.patch("omni_core.select_menu", side_effect=[1, 0]))
+                    prompt_mock = stack.enter_context(
+                        mock.patch(
+                            "omni_core.OmniCore.prompt_text",
+                            side_effect=["192.168.0.8:2222", "ubuntu"],
+                        )
+                    )
+                    getpass_mock = stack.enter_context(mock.patch("omni_core.getpass.getpass", return_value="super-secret"))
+                    probe_mock = stack.enter_context(
+                        mock.patch(
+                            "omni_core.probe_remote_host",
+                            return_value={
+                                "system": "Linux",
+                                "package_manager": "apt",
+                                "home_entries": 2,
+                                "git_repos": 0,
+                                "package_count": 12,
+                                "fresh_server": True,
+                                "system_family": "posix",
+                            },
+                        )
+                    )
+                    transfer_mock = stack.enter_context(
+                        mock.patch(
+                            "omni_core.transfer_payload",
+                            return_value={"success": True, "transport": "sftp", "stdout": "", "stderr": ""},
+                        )
+                    )
+                    core = omni_core.OmniCore()
+                    stack.enter_context(mock.patch.object(core, "is_interactive", return_value=True))
+                    core.connect_cmd(briefcase_path=str(briefcase_path))
+
+                error_mock.assert_not_called()
+                self.assertEqual(prompt_mock.call_count, 2)
+                self.assertEqual(probe_mock.call_args[0][0].host, "192.168.0.8")
+                self.assertEqual(probe_mock.call_args[0][0].port, 2222)
+                self.assertEqual(probe_mock.call_args[0][0].user, "ubuntu")
+                transfer_mock.assert_called_once()
+
     def test_connect_cmd_password_uses_prompt_and_transfers_with_paramiko_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             briefcase_path = Path(tmp) / "briefcase.json"
@@ -221,6 +304,60 @@ class GitHubCliSurfaceTests(unittest.TestCase):
                 )
 
             error_mock.assert_not_called()
+            getpass_mock.assert_called_once()
+            transfer_mock.assert_called_once()
+
+    def test_connect_cmd_prompts_for_port_when_host_has_no_embedded_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            briefcase_path = Path(tmp) / "briefcase.json"
+            briefcase_path.write_text("{}", encoding="utf-8")
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch("omni_core.print_logo"))
+                stack.enter_context(mock.patch("omni_core.render_command_header"))
+                stack.enter_context(mock.patch("omni_core.section"))
+                stack.enter_context(mock.patch("omni_core.kv"))
+                stack.enter_context(mock.patch("omni_core.nl"))
+                stack.enter_context(mock.patch("omni_core.info"))
+                stack.enter_context(mock.patch("omni_core.render_action_summary"))
+                error_mock = stack.enter_context(mock.patch("omni_core.render_human_error"))
+                prompt_mock = stack.enter_context(
+                    mock.patch("omni_core.OmniCore.prompt_text", side_effect=["8022"])
+                )
+                getpass_mock = stack.enter_context(mock.patch("omni_core.getpass.getpass", return_value="super-secret"))
+                probe_mock = stack.enter_context(
+                    mock.patch(
+                        "omni_core.probe_remote_host",
+                        return_value={
+                            "system": "Linux",
+                            "package_manager": "apt",
+                            "home_entries": 2,
+                            "git_repos": 0,
+                            "package_count": 12,
+                            "fresh_server": True,
+                            "system_family": "posix",
+                        },
+                    )
+                )
+                transfer_mock = stack.enter_context(
+                    mock.patch(
+                        "omni_core.transfer_payload",
+                        return_value={"success": True, "transport": "sftp", "stdout": "", "stderr": ""},
+                    )
+                )
+                core = omni_core.OmniCore()
+                stack.enter_context(mock.patch.object(core, "is_interactive", return_value=True))
+                core.connect_cmd(
+                    host="192.168.0.3",
+                    user="u0_a332",
+                    auth_mode="password",
+                    target_system="posix",
+                    briefcase_path=str(briefcase_path),
+                )
+
+            error_mock.assert_not_called()
+            self.assertEqual(prompt_mock.call_args_list[0].args[0], "Puerto SSH")
+            self.assertEqual(probe_mock.call_args[0][0].port, 8022)
             getpass_mock.assert_called_once()
             transfer_mock.assert_called_once()
 
