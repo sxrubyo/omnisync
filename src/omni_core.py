@@ -39,13 +39,18 @@ from bridge_ops import (
     write_capture_summary,
 )
 from chat_ops import (
+    build_chat_memory_prompt,
     chat_completion,
     clean_assistant_output,
     ensure_activation_prompt,
+    default_chat_memory,
+    load_chat_memory,
     load_chat_session,
     load_env_value,
     new_chat_session,
     parse_action_block,
+    record_chat_turn,
+    save_chat_memory,
     save_chat_session,
 )
 from cli_ux_ops import (
@@ -312,7 +317,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.1.4"
+OMNI_VERSION = "2.1.5"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -2292,108 +2297,184 @@ class OmniCore:
                 activation_file=str(AGENT_ACTIVATION_FILE),
             )
         session_path = Path(session["path"])
+        memory_path = CHAT_SESSION_DIR / "memory.json"
+        memory = load_chat_memory(
+            memory_path,
+            fallback=default_chat_memory(
+                host_snapshot=self.host_snapshot,
+                provider_title=str(config.get("provider_title", config.get("provider", "Omni Agent"))),
+                model=str(config.get("model", "")),
+                language=str(self.load_global_config().get("language") or "es"),
+            ),
+        )
         if not any(msg.get("role") == "system" for msg in session.get("messages", [])):
             session.setdefault("messages", []).insert(0, {"role": "system", "content": activation_text})
 
-        user_prompt = prompt.strip()
-        if not user_prompt and self.is_interactive():
-            user_prompt = self.prompt_text("Pregunta para Omni Agent", "resume el estado del host y dime el siguiente paso")
-        if not user_prompt:
-            render_human_error(
-                "Falta el prompt para la sesión de chat.",
-                suggestion="Usa `omni chat \"tu pregunta\"` o abre un TTY interactivo.",
-            )
-            return
+        interactive_loop = not prompt.strip() and self.is_interactive()
+        if interactive_loop:
+            hint("Sesión interactiva abierta. Usa /exit para salir, /memory para ver memoria y /clear para limpiar el contexto.")
 
-        session.setdefault("messages", []).append({"role": "user", "content": user_prompt})
-        try:
-            with Spinner("Consultando Omni Agent...", color=C.PRIMARY) as spinner:
-                completion = chat_completion(
+        pending_prompt = prompt.strip()
+        while True:
+            user_prompt = pending_prompt
+            pending_prompt = ""
+            if not user_prompt and self.is_interactive():
+                user_prompt = self.prompt_text("Pregunta para Omni Agent", "resume el estado del host y dime el siguiente paso")
+            if not user_prompt:
+                if interactive_loop:
+                    continue
+                render_human_error(
+                    "Falta el prompt para la sesión de chat.",
+                    suggestion="Usa `omni chat \"tu pregunta\"` o abre un TTY interactivo.",
+                )
+                return
+
+            normalized_prompt = user_prompt.strip()
+            if interactive_loop and normalized_prompt.lower() in {"/exit", "exit", "quit", "/quit"}:
+                hint("Sesión de Omni Chat cerrada.")
+                return
+            if interactive_loop and normalized_prompt.lower() in {"/memory", "memory"}:
+                render_action_summary(
+                    "Memoria activa",
+                    build_chat_memory_prompt(memory).splitlines()[:12],
+                    accent=C.PRIMARY,
+                )
+                continue
+            if interactive_loop and normalized_prompt.lower() in {"/clear", "clear"}:
+                session["messages"] = [{"role": "system", "content": activation_text}]
+                memory = default_chat_memory(
+                    host_snapshot=self.host_snapshot,
+                    provider_title=str(config.get("provider_title", config.get("provider", "Omni Agent"))),
+                    model=str(config.get("model", "")),
+                    language=str(self.load_global_config().get("language") or "es"),
+                )
+                save_chat_session(session_path, session)
+                save_chat_memory(memory_path, memory)
+                ok("Memoria y contexto limpiados.")
+                continue
+
+            session.setdefault("messages", []).append({"role": "user", "content": normalized_prompt})
+            runtime_messages = list(session["messages"])
+            if runtime_messages and runtime_messages[0].get("role") == "system":
+                runtime_messages = [runtime_messages[0], {"role": "system", "content": build_chat_memory_prompt(memory)}, *runtime_messages[1:]]
+            else:
+                runtime_messages.insert(0, {"role": "system", "content": build_chat_memory_prompt(memory)})
+
+            try:
+                with Spinner("Consultando Omni Agent...", color=C.PRIMARY) as spinner:
+                    completion = chat_completion(
+                        protocol=str(config.get("protocol", "")),
+                        base_url=str(config.get("base_url", "")),
+                        model=str(config.get("model", "")),
+                        api_key=api_key,
+                        messages=runtime_messages,
+                    )
+                    spinner.finish("Respuesta recibida", success=True)
+            except Exception as err:
+                render_human_error(
+                    f"El proveedor del agente devolvió un error: {err}",
+                    suggestion="Revisa base URL, API key y modelo configurado en `omni agent`.",
+                )
+                return
+
+            raw_text = str(completion.get("text", "")).strip()
+            action = parse_action_block(raw_text)
+            clean_text = clean_assistant_output(raw_text)
+            if clean_text:
+                print(clean_text)
+                nl()
+            session["messages"].append({"role": "assistant", "content": raw_text})
+            memory = record_chat_turn(memory, user_prompt=normalized_prompt, assistant_text=clean_text or raw_text, action=action)
+            save_chat_session(session_path, session)
+            save_chat_memory(memory_path, memory)
+
+            if not action:
+                if interactive_loop:
+                    continue
+                return
+
+            if action.get("type") != "command":
+                render_action_summary(
+                    str(action.get("title", "Siguiente paso")),
+                    [str(item) for item in action.get("items", [])] or [clean_text or "Sin detalle adicional"],
+                    accent=C.PRIMARY,
+                )
+                if interactive_loop:
+                    continue
+                return
+
+            command = str(action.get("command", "")).strip()
+            if not command:
+                if interactive_loop:
+                    continue
+                return
+            render_action_summary(
+                str(action.get("title", "Comando sugerido")),
+                [command, "Solo se ejecutan comandos que empiecen por `omni `."],
+                accent=C.YLW,
+            )
+            confirm = bool(action.get("confirm", True))
+            should_run = accept_all or not confirm or self.confirm_step("¿Ejecuto este comando ahora?", default=False)
+            if not should_run:
+                warn("Comando sugerido, pero no ejecutado.")
+                if interactive_loop:
+                    continue
+                return
+
+            result = self.run_agent_omni_command(command)
+            memory = record_chat_turn(
+                memory,
+                user_prompt=f"execute:{command}",
+                assistant_text=str(result.get("stdout", "") or result.get("stderr", "") or ""),
+                action=action,
+                command_result=result,
+            )
+            save_chat_memory(memory_path, memory)
+            if not result.get("success"):
+                render_human_error(
+                    str(result.get("stderr") or result.get("error") or "La ejecución del comando falló."),
+                    suggestion="Verifica el comando sugerido o reintenta con un paso más específico.",
+                )
+                return
+
+            output_lines = (str(result.get("stdout", "")) or "Comando ejecutado sin salida visible.").strip().splitlines()
+            render_action_summary(
+                "Comando ejecutado",
+                [f"Command: {command}", *output_lines[:8]],
+                accent=C.GRN,
+            )
+            session["messages"].append(
+                {
+                    "role": "user",
+                    "content": "Resultado del comando:\n" + (str(result.get("stdout", "")) or str(result.get("stderr", "")) or "Sin salida"),
+                }
+            )
+            try:
+                follow_up_messages = list(session["messages"])
+                if follow_up_messages and follow_up_messages[0].get("role") == "system":
+                    follow_up_messages = [follow_up_messages[0], {"role": "system", "content": build_chat_memory_prompt(memory)}, *follow_up_messages[1:]]
+                else:
+                    follow_up_messages.insert(0, {"role": "system", "content": build_chat_memory_prompt(memory)})
+                follow_up = chat_completion(
                     protocol=str(config.get("protocol", "")),
                     base_url=str(config.get("base_url", "")),
                     model=str(config.get("model", "")),
                     api_key=api_key,
-                    messages=session["messages"],
+                    messages=follow_up_messages
+                    + [{"role": "user", "content": "Explica el resultado anterior en pocas líneas y sugiere el siguiente paso operativo."}],
                 )
-                spinner.finish("Respuesta recibida", success=True)
-        except Exception as err:
-            render_human_error(
-                f"El proveedor del agente devolvió un error: {err}",
-                suggestion="Revisa base URL, API key y modelo configurado en `omni agent`.",
-            )
-            return
-
-        raw_text = str(completion.get("text", "")).strip()
-        action = parse_action_block(raw_text)
-        clean_text = clean_assistant_output(raw_text)
-        if clean_text:
-            print(clean_text)
-            nl()
-        session["messages"].append({"role": "assistant", "content": raw_text})
-        save_chat_session(session_path, session)
-
-        if not action:
-            return
-
-        if action.get("type") != "command":
-            render_action_summary(
-                str(action.get("title", "Siguiente paso")),
-                [str(item) for item in action.get("items", [])] or [clean_text or "Sin detalle adicional"],
-                accent=C.PRIMARY,
-            )
-            return
-
-        command = str(action.get("command", "")).strip()
-        if not command:
-            return
-        render_action_summary(
-            str(action.get("title", "Comando sugerido")),
-            [command, "Solo se ejecutan comandos que empiecen por `omni `."],
-            accent=C.YLW,
-        )
-        confirm = bool(action.get("confirm", True))
-        should_run = accept_all or not confirm or self.confirm_step("¿Ejecuto este comando ahora?", default=False)
-        if not should_run:
-            warn("Comando sugerido, pero no ejecutado.")
-            return
-
-        result = self.run_agent_omni_command(command)
-        if not result.get("success"):
-            render_human_error(
-                str(result.get("stderr") or result.get("error") or "La ejecución del comando falló."),
-                suggestion="Verifica el comando sugerido o reintenta con un paso más específico.",
-            )
-            return
-
-        output_lines = (str(result.get("stdout", "")) or "Comando ejecutado sin salida visible.").strip().splitlines()
-        render_action_summary(
-            "Comando ejecutado",
-            [f"Command: {command}", *output_lines[:8]],
-            accent=C.GRN,
-        )
-        session["messages"].append(
-            {
-                "role": "user",
-                "content": "Resultado del comando:\n" + (str(result.get("stdout", "")) or str(result.get("stderr", "")) or "Sin salida"),
-            }
-        )
-        try:
-            follow_up = chat_completion(
-                protocol=str(config.get("protocol", "")),
-                base_url=str(config.get("base_url", "")),
-                model=str(config.get("model", "")),
-                api_key=api_key,
-                messages=session["messages"]
-                + [{"role": "user", "content": "Explica el resultado anterior en pocas líneas y sugiere el siguiente paso operativo."}],
-            )
-            follow_up_text = clean_assistant_output(str(follow_up.get("text", "")).strip())
-            if follow_up_text:
-                nl()
-                render_action_summary("Siguiente paso", follow_up_text.splitlines()[:8], accent=C.PRIMARY)
-                session["messages"].append({"role": "assistant", "content": str(follow_up.get("text", "")).strip()})
-        except Exception:
-            pass
-        save_chat_session(session_path, session)
+                follow_up_text = clean_assistant_output(str(follow_up.get("text", "")).strip())
+                if follow_up_text:
+                    nl()
+                    render_action_summary("Siguiente paso", follow_up_text.splitlines()[:8], accent=C.PRIMARY)
+                    session["messages"].append({"role": "assistant", "content": str(follow_up.get("text", "")).strip()})
+                    memory = record_chat_turn(memory, user_prompt="follow-up", assistant_text=follow_up_text)
+                    save_chat_memory(memory_path, memory)
+            except Exception:
+                pass
+            save_chat_session(session_path, session)
+            if not interactive_loop:
+                return
 
     def load_global_config(self) -> Dict[str, Any]:
         return load_global_config(GLOBAL_CONFIG_FILE)

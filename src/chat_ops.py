@@ -111,6 +111,126 @@ def latest_chat_session_path(session_dir: Path) -> Optional[Path]:
     return candidates[-1] if candidates else None
 
 
+def default_chat_memory(
+    *,
+    host_snapshot: Dict[str, Any] | None = None,
+    provider_title: str = "",
+    model: str = "",
+    language: str = "es",
+) -> Dict[str, Any]:
+    snapshot = host_snapshot or {}
+    return {
+        "language": language or "es",
+        "provider_title": provider_title,
+        "model": model,
+        "host_snapshot": {
+            "host": snapshot.get("host") or snapshot.get("hostname") or "",
+            "shell": snapshot.get("shell") or "",
+            "package_manager": snapshot.get("package_manager") or snapshot.get("pkg") or "",
+            "cpu": snapshot.get("cpu") or "",
+            "ram": snapshot.get("ram") or "",
+            "disk": snapshot.get("disk") or "",
+        },
+        "recent_prompts": [],
+        "recent_actions": [],
+        "updated_at": utc_now(),
+    }
+
+
+def load_chat_memory(path: Path, *, fallback: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    if not path.exists():
+        return dict(fallback or {})
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return dict(fallback or {})
+    merged = dict(fallback or {})
+    merged.update(payload)
+    return merged
+
+
+def save_chat_memory(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = dict(payload)
+    body["updated_at"] = utc_now()
+    path.write_text(json.dumps(body, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def record_chat_turn(
+    memory: Dict[str, Any],
+    *,
+    user_prompt: str,
+    assistant_text: str,
+    action: Dict[str, Any] | None = None,
+    command_result: Dict[str, Any] | None = None,
+    keep: int = 6,
+) -> Dict[str, Any]:
+    updated = dict(memory)
+    prompts = list(updated.get("recent_prompts") or [])
+    prompts.append({"user": user_prompt.strip(), "assistant": assistant_text.strip(), "at": utc_now()})
+    updated["recent_prompts"] = prompts[-keep:]
+
+    actions = list(updated.get("recent_actions") or [])
+    if action:
+        item: Dict[str, Any] = {
+            "type": str(action.get("type", "")),
+            "title": str(action.get("title", "")).strip(),
+            "command": str(action.get("command", "")).strip(),
+            "at": utc_now(),
+        }
+        if command_result:
+            item["success"] = bool(command_result.get("success"))
+            item["returncode"] = command_result.get("returncode")
+        actions.append(item)
+    updated["recent_actions"] = actions[-keep:]
+    updated["updated_at"] = utc_now()
+    return updated
+
+
+def build_chat_memory_prompt(memory: Dict[str, Any]) -> str:
+    host = memory.get("host_snapshot") or {}
+    prompt_lines = [
+        "Memoria operativa de Omni Agent.",
+        f"Idioma preferido: {memory.get('language', 'es')}",
+        f"Proveedor activo: {memory.get('provider_title', '')}",
+        f"Modelo activo: {memory.get('model', '')}",
+    ]
+    host_bits = [str(host.get(key, "")).strip() for key in ("host", "shell", "package_manager", "cpu", "ram", "disk")]
+    if any(host_bits):
+        prompt_lines.append(
+            "Host actual: "
+            + " | ".join(
+                value
+                for value in [
+                    str(host.get("host", "")).strip(),
+                    str(host.get("shell", "")).strip(),
+                    str(host.get("package_manager", "")).strip(),
+                    str(host.get("cpu", "")).strip(),
+                    str(host.get("ram", "")).strip(),
+                    str(host.get("disk", "")).strip(),
+                ]
+                if value
+            )
+        )
+    recent_prompts = list(memory.get("recent_prompts") or [])[-3:]
+    if recent_prompts:
+        prompt_lines.append("Últimos turnos:")
+        for item in recent_prompts:
+            user = str(item.get("user", "")).strip()
+            assistant = str(item.get("assistant", "")).strip()
+            prompt_lines.append(f"- Usuario: {user[:180]}")
+            if assistant:
+                prompt_lines.append(f"  Omni: {assistant[:180]}")
+    recent_actions = list(memory.get("recent_actions") or [])[-3:]
+    if recent_actions:
+        prompt_lines.append("Acciones recientes:")
+        for item in recent_actions:
+            command = str(item.get("command", "")).strip()
+            if command:
+                prompt_lines.append(f"- {command} (success={item.get('success', 'n/a')})")
+    prompt_lines.append("Usa esta memoria para evitar repetir preguntas y proponer el siguiente paso con contexto.")
+    return "\n".join(prompt_lines).strip()
+
+
 def trim_chat_messages(messages: List[Dict[str, str]], *, max_messages: int = 14) -> List[Dict[str, str]]:
     if len(messages) <= max_messages:
         return list(messages)

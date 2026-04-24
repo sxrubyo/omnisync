@@ -11,13 +11,18 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from chat_ops import (  # noqa: E402
+    build_chat_memory_prompt,
     clean_assistant_output,
     build_chat_request,
+    default_chat_memory,
     ensure_chat_permissions,
     extract_chat_text,
+    load_chat_memory,
     load_chat_session,
     new_chat_session,
     parse_action_block,
+    record_chat_turn,
+    save_chat_memory,
     save_chat_session,
     trim_chat_messages,
 )
@@ -125,6 +130,29 @@ class ChatOpsTests(unittest.TestCase):
             )
             permissions = ensure_chat_permissions(session)
             self.assertEqual(permissions["mode"], "smart")
+
+    def test_chat_memory_round_trip_and_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_path = Path(tmp) / "memory.json"
+            memory = default_chat_memory(
+                host_snapshot={"host": "linux-box", "shell": "bash", "package_manager": "apt-get"},
+                provider_title="OpenAI Direct",
+                model="gpt-5.2",
+                language="es",
+            )
+            memory = record_chat_turn(
+                memory,
+                user_prompt="haz diagnóstico",
+                assistant_text="Voy a correr omni doctor",
+                action={"type": "command", "command": "omni doctor", "title": "Diagnóstico"},
+                command_result={"success": True, "returncode": 0},
+            )
+            save_chat_memory(memory_path, memory)
+            loaded = load_chat_memory(memory_path)
+            prompt = build_chat_memory_prompt(loaded)
+            self.assertIn("linux-box", prompt)
+            self.assertIn("OpenAI Direct", prompt)
+            self.assertIn("omni doctor", prompt)
 
 
 if __name__ == "__main__":
