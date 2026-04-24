@@ -1,6 +1,6 @@
 {
   "name": "omnisync",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "description": "Portable migration CLI for SSH transfer, briefcase-based restore, and AI-assisted host rebuilds.",
   "license": "MIT",
   "author": "Black Boss",

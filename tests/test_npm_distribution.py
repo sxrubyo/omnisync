@@ -75,6 +75,8 @@ class NpmDistributionTests(unittest.TestCase):
         self.assertNotIn("Workspace Init", result.stdout + result.stderr)
         self.assertNotIn("Creando backup automático post-init", result.stdout + result.stderr)
         self.assertIn("OmniSync - Command Reference", result.stdout)
+        self.assertIn("[omni] Sincronizando OmniSync", result.stderr)
+        self.assertIn("[omni] Preparando runtime local de OmniSync", result.stderr)
 
     def test_npm_launcher_script_supports_windows_bootstrap(self) -> None:
         script = (REPO_ROOT / "npm" / "omni.js").read_text(encoding="utf-8")

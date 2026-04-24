@@ -85,6 +85,10 @@ function fail(message) {
   process.exit(1);
 }
 
+function status(message) {
+  console.error(`[omni] ${message}`);
+}
+
 function run(command, args, extraEnv) {
   const result = runAndReturn(command, args, extraEnv);
   if (typeof result.status === "number") {
@@ -162,6 +166,7 @@ function ensureRuntime() {
   if (runtime) {
     return runtime;
   }
+  status("Preparando runtime local de OmniSync. El primer arranque puede tardar 30-60s.");
   ensureDir(omniHome);
   const python = findSystemPython();
   if (!python) {
@@ -182,6 +187,7 @@ function ensureRuntime() {
   if (process.env.OMNI_INSTALL_SKIP_DEPENDENCY_BOOTSTRAP === "1") {
     return runtime;
   }
+  status("Instalando dependencias base de Python para OmniSync...");
   result = runAndReturn(runtime, ["-m", "pip", "install", "--disable-pip-version-check", "--upgrade", "pip"], {});
   if (typeof result.status === "number" && result.status !== 0) {
     process.exit(result.status);
@@ -194,8 +200,10 @@ function ensureRuntime() {
 }
 
 function bootstrapFromPackage() {
+  status(`Sincronizando OmniSync ${packageVersion} en ${omniHome}...`);
   syncPackageTree(packageRoot, omniHome);
   const runtime = ensureRuntime();
+  status("Preparando workspace base de OmniSync...");
   const init = runAndReturn(runtime, [entrypoint, "init"], {
     OMNI_HOME: omniHome,
     OMNI_BOOTSTRAP_INIT: "1",
