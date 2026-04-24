@@ -1,6 +1,6 @@
 {
   "name": "omnisync",
-  "version": "2.1.9",
+  "version": "2.1.10",
   "description": "Portable migration CLI for SSH transfer, briefcase-based restore, and AI-assisted host rebuilds.",
   "license": "MIT",
   "author": "Black Boss",
@@ -26,8 +26,8 @@
     "npm/*.js",
     ".codex/skills/omni-sync/SKILL.md",
     ".claude/skills/omni-sync/SKILL.md",
-    ".gemini/commands/omni-sync.toml",
-    ".gemini/commands/omni-agent.toml",
+    ".gemini/commands/*.toml",
+    ".gemini/templates/*.toml",
     ".opencode/commands/omni-sync.md",
     ".opencode/commands/omni-agent.md",
     "install.sh",

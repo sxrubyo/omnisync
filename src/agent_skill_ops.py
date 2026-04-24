@@ -92,11 +92,11 @@ INTEGRATION_ASSETS: Dict[str, tuple[AgentIntegrationAsset, ...]] = {
     ),
     "gemini-cli": (
         AgentIntegrationAsset(
-            source=".gemini/commands/omni-sync.toml",
+            source=".gemini/templates/omni-sync.toml",
             target=".gemini/commands/omni-sync.toml",
         ),
         AgentIntegrationAsset(
-            source=".gemini/commands/omni-agent.toml",
+            source=".gemini/templates/omni-agent.toml",
             target=".gemini/commands/omni-agent.toml",
         ),
     ),

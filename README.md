@@ -138,7 +138,8 @@ Optional web research: configure **Brave Search** with `omni config brave-search
 Skills and command files are pre-configured for:
 - `.codex/skills/omni-sync/SKILL.md`
 - `.claude/skills/omni-sync/SKILL.md`
-- `.gemini/commands/omni-sync.toml`
+- `.gemini/commands/workspace.omni-sync.toml`
+- `~/.gemini/commands/omni-sync.toml`
 - `.opencode/commands/omni-sync.md`
 
 ---

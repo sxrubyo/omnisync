@@ -250,6 +250,8 @@ class InstallDistributionTests(unittest.TestCase):
                     continue
                 relative_path = Path(raw_path.decode("utf-8"))
                 source = REPO_ROOT / relative_path
+                if not source.exists():
+                    continue
                 target = archive_root / relative_path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
