@@ -320,7 +320,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.1.8"
+OMNI_VERSION = "2.1.9"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -2043,6 +2043,22 @@ class OmniCore:
 
     def config_cmd(self, subaction: str = "", *, value: str = "") -> None:
         normalized = str(subaction or "").strip().lower()
+        if not normalized and self.is_interactive():
+            options = [
+                ("language", self.t("Idioma", "Language"), self.t("Cambiar el idioma principal de Omni.", "Change Omni's primary language.")),
+                ("brave-search", "Brave Search", self.t("Configurar búsqueda web para Omni Agent.", "Configure web search for Omni Agent.")),
+                ("show", self.t("Ver configuración", "Show configuration"), self.t("Mostrar el estado actual de Omni.", "Show the current Omni state.")),
+            ]
+            selected = select_menu(
+                [title for _, title, _ in options],
+                title=self.t("¿Qué parte de Omni quieres configurar?", "What part of Omni do you want to configure?"),
+                descriptions=[description for _, _, description in options],
+                icons=["🌐", "🔎", "⚙️"],
+                default=0,
+                show_index=True,
+                footer=self.t("↑/↓ elegir opción · Enter confirmar", "↑/↓ choose an option · Enter confirm"),
+            )
+            normalized = options[selected][0]
         if normalized in {"language", "lang", "idioma"}:
             requested = value.strip()
             if not requested and self.is_interactive():
@@ -2092,6 +2108,9 @@ class OmniCore:
                 ok("Brave Search ya estaba configurado.")
             else:
                 hint("Guardé el provider de búsqueda, pero todavía falta la API key.")
+            self.show_config()
+            return
+        if normalized in {"show", "status", "config"}:
             self.show_config()
             return
         self.show_config()
@@ -2309,6 +2328,98 @@ class OmniCore:
             ],
         }
 
+    def summarize_current_host_for_chat(self) -> List[str]:
+        host = self.host_snapshot
+        system = f"{host.get('system', 'unknown')} {host.get('release', '')}".strip()
+        shell = str(host.get("shell") or "unknown")
+        package_manager = str(host.get("package_manager") or "unknown")
+        ram_used = int(host.get("memory_used_mb", 0) or 0)
+        ram_total = int(host.get("memory_total_mb", 0) or 0)
+        disk_free = host.get("disk_free_gb", 0)
+        disk_total = host.get("disk_total_gb", 0)
+        return [
+            f"Veo que estás en {system} con shell {shell} y package manager {package_manager}.",
+            f"RAM usada: {ram_used} MB de {ram_total} MB.",
+            f"Disco libre: {disk_free} GB de {disk_total} GB.",
+            f"Home actual: {Path.home()}",
+        ]
+
+    def detect_operator_chat_intent(self, prompt: str) -> str:
+        raw = str(prompt or "").strip().lower()
+        if not raw:
+            return ""
+        if any(token in raw for token in ("migrar todo", "migrate everything", "migrate all", "move everything", "backup everything", "respalda todo", "quiero migrar todo")):
+            return "migrate-all"
+        if raw in {"hola", "hi", "hello", "hey"}:
+            return "greeting"
+        return ""
+
+    def handle_operator_chat_intent(
+        self,
+        *,
+        intent: str,
+        session: Dict[str, Any],
+        session_path: Path,
+        memory: Dict[str, Any],
+        memory_path: Path,
+        accept_all: bool,
+    ) -> tuple[bool, Dict[str, Any], str]:
+        if intent == "greeting":
+            lines = self.summarize_current_host_for_chat()
+            render_action_summary("Host Detectado", lines, accent=C.PRIMARY)
+            return True, memory, "El usuario saludó. Responde breve, resume el host con datos concretos y ofrece rutas claras: migrar todo, conectar por SSH o crear una maleta."
+
+        if intent != "migrate-all":
+            return False, memory, ""
+
+        summary_lines = self.summarize_current_host_for_chat()
+        summary_lines.append("Como quieres migrar todo, el siguiente paso lógico es crear una maleta completa con `omni briefcase --full`.")
+        render_action_summary("Plan Inicial de Migración", summary_lines, accent=C.PRIMARY)
+
+        should_run = accept_all or self.confirm_step("¿Quieres que empaquete todo ahora con `omni briefcase --full`?", default=True)
+        if not should_run:
+            warn("No ejecuté la maleta completa. Te guiaré sin tocar nada todavía.")
+            return True, memory, (
+                "El usuario quiere migrar todo pero rechazó ejecutar `omni briefcase --full` por ahora. "
+                "Resume el host y explica el siguiente paso mínimo sin repetir preguntas básicas."
+            )
+
+        info("Ejecutando `omni briefcase --full` desde la capa operativa de Omni.")
+        result = self.run_agent_omni_command("omni briefcase --full")
+        memory = record_chat_turn(
+            memory,
+            user_prompt="operator:intent:migrate-all",
+            assistant_text=str(result.get("stdout", "") or result.get("stderr", "") or ""),
+            action={"type": "command", "command": "omni briefcase --full", "title": "Maleta completa"},
+            command_result=result,
+        )
+        save_chat_memory(memory_path, memory)
+
+        if not result.get("success"):
+            render_human_error(
+                str(result.get("stderr") or result.get("error") or "No pude ejecutar omni briefcase --full."),
+                suggestion="Revisa el error anterior o vuelve a intentar desde `omni briefcase --full`.",
+            )
+            return True, memory, (
+                "Intentaste ejecutar `omni briefcase --full` para el usuario y falló. "
+                "Explica el fallo en pocas líneas y di el siguiente paso exacto para corregirlo."
+            )
+
+        output_lines = (str(result.get("stdout", "")) or "Maleta creada sin salida visible.").strip().splitlines()
+        render_action_summary(
+            "Maleta Creada",
+            [f"Command: omni briefcase --full", *output_lines[:10]],
+            accent=C.GRN,
+        )
+        session.setdefault("messages", []).append(
+            {"role": "user", "content": "Omni Operator ejecutó `omni briefcase --full`.\nResultado:\n" + (str(result.get("stdout", "")) or "Sin salida visible")}
+        )
+        save_chat_session(session_path, session)
+        return True, memory, (
+            "El usuario pidió migrar todo y Omni Operator ya ejecutó `omni briefcase --full`. "
+            "Resume el estado actual con datos concretos y pide solo el siguiente dato crítico para continuar la migración."
+        )
+
     def _build_chat_runtime_messages(self, session: Dict[str, Any], memory: Dict[str, Any]) -> List[Dict[str, str]]:
         runtime_messages = list(session.get("messages") or [])
         memory_prompt = build_chat_memory_prompt(memory)
@@ -2512,6 +2623,7 @@ class OmniCore:
                 return
 
             normalized_prompt = user_prompt.strip()
+            detected_intent = self.detect_operator_chat_intent(normalized_prompt)
             if interactive_loop and normalized_prompt.lower() in {"/exit", "exit", "quit", "/quit"}:
                 hint("Sesión de Omni Chat cerrada.")
                 return
@@ -2543,6 +2655,18 @@ class OmniCore:
                 continue
 
             session.setdefault("messages", []).append({"role": "user", "content": normalized_prompt})
+            if detected_intent:
+                handled, memory, operator_prompt = self.handle_operator_chat_intent(
+                    intent=detected_intent,
+                    session=session,
+                    session_path=session_path,
+                    memory=memory,
+                    memory_path=memory_path,
+                    accept_all=accept_all,
+                )
+                if handled and operator_prompt:
+                    session["messages"].append({"role": "user", "content": operator_prompt})
+                    save_chat_session(session_path, session)
             auto_steps = 0
             while True:
                 language = detect_language_preference(normalized_prompt, fallback=str(memory.get("language") or self.current_language()))
