@@ -112,7 +112,7 @@ def create_bundle(
 ) -> Path:
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     metadata = _metadata_blob(kind, manifest)
-    host_root = Path(str(manifest.get("host_root") or "/home/ubuntu")).resolve()
+    host_root = Path(str(manifest.get("host_root") or Path.home())).resolve()
     host_parts = [part for part in host_root.parts if part not in (host_root.root, "")]
     host_prefix = Path(*host_parts[-2:]) if host_parts else Path()
 

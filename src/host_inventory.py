@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set
 
+DEFAULT_HOME_ROOT = str(Path.home())
+
 
 DEFAULT_EXCLUDE_PATTERNS = [
     ".git",
@@ -197,7 +199,7 @@ def looks_like_secret_file(path: Path, rel_file: str = "") -> bool:
 
 
 def discover_full_home_secret_paths(
-    home_root: str = "/home/ubuntu",
+    home_root: str = DEFAULT_HOME_ROOT,
     exclude_patterns: Iterable[str] | None = None,
 ) -> List[str]:
     home = Path(expand_path(home_root, home_root)).resolve()
@@ -239,7 +241,7 @@ def discover_full_home_secret_paths(
     return sorted(found)
 
 
-def profile_presets(home_root: str = "/home/ubuntu") -> Dict[str, Dict[str, Any]]:
+def profile_presets(home_root: str = DEFAULT_HOME_ROOT) -> Dict[str, Dict[str, Any]]:
     home = expand_path(home_root, home_root)
     production_clean = build_default_manifest(home_root, profile=DEFAULT_PROFILE, include_profile_defaults=False)
     full_home_secret_paths = discover_full_home_secret_paths(home_root, DEFAULT_EXCLUDE_PATTERNS)
@@ -267,14 +269,14 @@ def profile_presets(home_root: str = "/home/ubuntu") -> Dict[str, Dict[str, Any]
     }
 
 
-def build_profile_manifest(profile: str = DEFAULT_PROFILE, home_root: str = "/home/ubuntu") -> Dict[str, Any]:
+def build_profile_manifest(profile: str = DEFAULT_PROFILE, home_root: str = DEFAULT_HOME_ROOT) -> Dict[str, Any]:
     presets = profile_presets(home_root)
     normalized_profile = str(profile or DEFAULT_PROFILE).strip().lower().replace("_", "-")
     selected = presets.get(normalized_profile, presets[DEFAULT_PROFILE])
     return deepcopy(selected)
 
 
-def expand_path(raw_path: str, home_root: str = "/home/ubuntu") -> str:
+def expand_path(raw_path: str, home_root: str = DEFAULT_HOME_ROOT) -> str:
     if not raw_path:
         return raw_path
     home = Path(home_root).expanduser().resolve()
@@ -310,7 +312,7 @@ def normalize_manifest(manifest: Dict[str, Any], home_root: str) -> Dict[str, An
 
 
 def build_default_manifest(
-    home_root: str = "/home/ubuntu",
+    home_root: str = DEFAULT_HOME_ROOT,
     profile: str = DEFAULT_PROFILE,
     *,
     include_profile_defaults: bool = True,
@@ -335,7 +337,7 @@ def build_default_manifest(
     return manifest
 
 
-def load_manifest(manifest_path: Path, home_root: str = "/home/ubuntu") -> Dict[str, Any]:
+def load_manifest(manifest_path: Path, home_root: str = DEFAULT_HOME_ROOT) -> Dict[str, Any]:
     if not manifest_path.exists():
         return build_default_manifest(home_root)
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -349,7 +351,7 @@ def save_manifest(manifest_path: Path, manifest: Dict[str, Any]) -> None:
 
 def ensure_manifest(
     manifest_path: Path,
-    home_root: str = "/home/ubuntu",
+    home_root: str = DEFAULT_HOME_ROOT,
     profile: str = DEFAULT_PROFILE,
     force_profile: bool = False,
 ) -> Dict[str, Any]:
@@ -365,7 +367,7 @@ def ensure_manifest(
     return manifest
 
 
-def build_state_exclude_patterns(manifest: Dict[str, Any], home_root: str = "/home/ubuntu") -> List[str]:
+def build_state_exclude_patterns(manifest: Dict[str, Any], home_root: str = DEFAULT_HOME_ROOT) -> List[str]:
     patterns: List[str] = []
     seen: set[str] = set()
     resolved_home = expand_path(str(manifest.get("host_root") or home_root), home_root)

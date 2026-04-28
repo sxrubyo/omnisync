@@ -104,6 +104,30 @@ class CliUxOpsTests(unittest.TestCase):
         box_start = guided_line.index("╭ OMNI START SURFACE")
         self.assertLessEqual(len(guided_line[box_start:]), 70)
 
+    def test_build_help_surface_lines_stacks_for_narrow_terminals(self):
+        lines = build_help_surface_lines(
+            {
+                "system": "linux",
+                "release": "6.8",
+                "shell": "bash",
+                "package_manager": "apt-get",
+                "cpu_cores": 2,
+                "memory_total_mb": 8000,
+                "memory_used_mb": 3200,
+                "disk_total_gb": 100.0,
+                "disk_free_gb": 42.0,
+                "terminal_columns": 82,
+            },
+            [
+                "Quickstart: omni guide",
+                "Keep secrets out of git.",
+            ],
+        )
+        omni_line = next(line for line in lines if "O  M  N  I" in line)
+        surface_line = next(line for line in lines if "╭ OMNI CONTROL SURFACE" in line)
+        self.assertLess(lines.index(omni_line), lines.index(surface_line))
+        self.assertFalse("╭ OMNI CONTROL SURFACE" in omni_line)
+
     def test_build_command_ship_lines_stays_compact_and_space_themed(self):
         lines = build_command_ship_lines()
         self.assertGreaterEqual(len(lines), 6)

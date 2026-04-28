@@ -130,6 +130,7 @@ def collect_host_snapshot() -> Dict[str, Any]:
     info = detect_platform_info()
     disk = shutil.disk_usage(str(Path.home()))
     total_mem_mb, used_mem_mb = _memory_snapshot()
+    terminal_size = shutil.get_terminal_size((80, 24))
     return {
         "system": info.system,
         "release": info.release,
@@ -142,6 +143,8 @@ def collect_host_snapshot() -> Dict[str, Any]:
         "disk_free_gb": round(disk.free / (1024**3), 1),
         "home": info.home,
         "terminal": info.terminal,
+        "terminal_columns": terminal_size.columns,
+        "terminal_rows": terminal_size.lines,
     }
 
 
@@ -277,11 +280,19 @@ def _build_sectioned_surface_box_lines(
 
 
 def _surface_box_width(snapshot: Dict[str, Any], *, default: int = 74) -> int:
+    columns = int(snapshot.get("terminal_columns", 0) or 0)
+    if columns:
+        return max(54, min(default, columns - 6))
     terminal_name = str(snapshot.get("terminal", "")).lower()
     compact_terminals = ("xterm", "screen", "tmux", "linux", "vt")
     if any(token in terminal_name for token in compact_terminals):
         return 66
     return default
+
+
+def _should_stack_surface(snapshot: Dict[str, Any], *, threshold: int = 104) -> bool:
+    columns = int(snapshot.get("terminal_columns", 0) or 0)
+    return 0 < columns < threshold
 
 
 def _merge_surface_columns(left_lines: list[str], right_lines: list[str], *, gap: int = 2) -> list[str]:
@@ -370,6 +381,8 @@ def build_help_surface_lines(
         ],
         width=_surface_box_width(snapshot, default=74),
     )
+    if _should_stack_surface(snapshot):
+        return left_lines + [""] + right_lines
     return _merge_surface_columns(left_lines, right_lines, gap=2)
 
 
@@ -446,6 +459,8 @@ def build_guided_start_surface_lines(
         ],
         width=_surface_box_width(snapshot, default=70),
     )
+    if _should_stack_surface(snapshot):
+        return left_lines + [""] + right_lines
     return _merge_surface_columns(left_lines, right_lines, gap=1)
 
 

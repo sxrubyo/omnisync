@@ -320,7 +320,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.1.10"
+OMNI_VERSION = "2.1.11"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -1510,7 +1510,7 @@ class OmniCore:
         options = ["production-clean", "full-home"]
         descriptions = [
             "Restaura arquitectura curada, más liviana y portable.",
-            "Captura y reconstruye TODO /home/ubuntu, con secretos separados.",
+            f"Captura y reconstruye TODO {Path.home()}, con secretos separados.",
         ]
         icons = ["🧩", "🏠"]
         try:
@@ -3264,7 +3264,7 @@ class OmniCore:
         bullet("omni processes - Show PM2 processes", C.PRIMARY)
         bullet("omni install   - Show portable install guide", C.PRIMARY)
         bullet("omni init      - Create missing local config/runtime files", C.PRIMARY)
-        dim("    Use `omni init --profile full-home` for a full /home/ubuntu capture")
+        dim(f"    Use `omni init --profile full-home` for a full {Path.home()} capture")
         bullet("omni sync      - Pull snapshots from configured servers", C.PRIMARY)
         bullet("omni inventory - Classify host state vs. secrets vs. noise", C.PRIMARY)
         bullet("omni briefcase - Export portable migration metadata", C.PRIMARY)
@@ -4415,7 +4415,7 @@ class OmniCore:
                     "",
                     "Siguiente paso recomendado:",
                     "$ omni bridge",
-                    "$ ls -lah /home/ubuntu/omni-core/backups/host-bundles",
+                    f"$ ls -lah {Path(self.root_dir) / 'backups' / 'host-bundles'}",
                 ]
             )
             render_action_summary("Capture listo", summary_lines, accent=C.GRN)
@@ -4712,7 +4712,7 @@ class OmniCore:
         for server in self.servers:
             remote_roots = [host_root] if profile == FULL_HOME_PROFILE and host_root else list(server.get("paths", []) or [])
             if not remote_roots:
-                remote_roots = [host_root or "/home/ubuntu"]
+                remote_roots = [host_root or str(Path.home())]
             for remote_root in remote_roots:
                 if str(remote_root) == str(Path(self.root_dir)):
                     results.append({"server": server.get("name", server.get("host", "server")), "path": remote_root, "status": "skipped_omni_home"})
@@ -4779,7 +4779,10 @@ class OmniCore:
                 raise
             action = options[selected]
         if action in {"2", "send"}:
-            destination = dest or self.prompt_text("Remote destination (example ubuntu@host:/home/ubuntu/omni-bundles)", "")
+            destination = dest or self.prompt_text(
+                f"Remote destination (example ubuntu@host:{Path.home() / 'omni-bundles'})",
+                "",
+            )
             if not destination:
                 fail("Remote destination required for bridge send.")
                 return
@@ -4867,7 +4870,7 @@ class OmniCore:
 
             if any(str(item.get("name")) == ".codex" for item in discovered):
                 nl()
-                hint("`.codex` está dentro de full-home porque el scope activo es /home/ubuntu completo.")
+                hint(f"`.codex` está dentro de full-home porque el scope activo es {Path.home()} completo.")
                 hint("Si luego quieres una captura más liviana, toca excluirlo explícitamente o usar production-clean.")
             if any(str(item.get("name")) == "melissa-backups" for item in discovered):
                 hint("`melissa-backups` también entra en full-home y puede inflar mucho el bundle por sus respaldos históricos.")

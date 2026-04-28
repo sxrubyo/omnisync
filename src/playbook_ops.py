@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import List
 
 
@@ -23,6 +24,7 @@ class ExampleEntry:
 
 
 def build_examples_catalog() -> List[ExampleEntry]:
+    home_root = str(Path.home())
     return [
         ExampleEntry(
             key="guided-start",
@@ -34,7 +36,7 @@ def build_examples_catalog() -> List[ExampleEntry]:
         ExampleEntry(
             key="full-home-capture",
             title="Captura completa del host",
-            description="Crea el recovery pack de TODO /home/ubuntu usando el perfil full-home.",
+            description=f"Crea el recovery pack de TODO {home_root} usando el perfil full-home.",
             when_to_use="Antes de apagar un servidor, migrarlo o congelar un estado real de producción.",
             command="omni init --profile full-home\nexport OMNI_SECRET_PASSPHRASE='tu-clave-fuerte'\nomni capture --profile full-home",
         ),
@@ -57,7 +59,7 @@ def build_examples_catalog() -> List[ExampleEntry]:
             title="Reescritura de IP y hostname",
             description="Busca referencias del host viejo y las corrige de forma segura.",
             when_to_use="Después de mover el stack a otra IP o dominio y quieres corregir .env, JSON, compose, ecosystem y configs.",
-            command="omni rewrite-ip /home/ubuntu --apply --accept-all",
+            command=f"omni rewrite-ip {home_root} --apply --accept-all",
         ),
         ExampleEntry(
             key="agent-setup",
