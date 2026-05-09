@@ -80,7 +80,6 @@ from github_ops import (
     github_identity,
     latest_briefcase_entry,
     list_directory,
-    load_global_config,
     parse_repo_slug,
     put_file,
     save_global_config,
@@ -320,7 +319,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.1.12"
+OMNI_VERSION = "2.2.0"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -3109,6 +3108,235 @@ class OmniCore:
         print(f"    omni pull --repo {owner}/{repo}    # Descargar maleta desde GitHub")
         print(f"    omni connect --host <dest>         # Transferir por SSH/SFTP")
 
+    def _push_briefcase_to_github(self, sources: List[str], fresh_server: bool) -> None:
+        section("Subiendo a GitHub")
+        config = self.load_global_config().get("github") or {}
+        token = str(config.get("token") or "").strip()
+        if not token:
+            render_human_error("GitHub auth no está configurado.", suggestion="Ejecuta `omni auth github`.")
+            return
+        
+        owner = str(config.get("owner") or "").strip()
+        repo = str(config.get("repo") or "omni-migrate-sync-private")
+        target = parse_repo_slug(f"{owner}/{repo}", default_owner=owner)
+        ensure_private_repo(target, token=token)
+        
+        try:
+            for source_path in sources:
+                source = Path(source_path).expanduser()
+                if not source.exists():
+                    warn(f"No encontré {source}, saltando...")
+                    continue
+                
+                file_name = source.name
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                
+                if file_name.endswith(".json"):
+                    github_path = f"briefcases/{timestamp}_{file_name}"
+                elif file_name.endswith(".restore.sh"):
+                    github_path = f"restore-scripts/{timestamp}_{file_name}"
+                else:
+                    github_path = f"bundles/{timestamp}_{file_name}"
+                
+                content = source.read_text(encoding="utf-8")
+                with Spinner(f"Subiendo {file_name}...", color=C.PRIMARY) as spinner:
+                    put_file(target, github_path, content, token=token, message=f"omni connect: {file_name}")
+                    spinner.finish(f"{file_name} subido", success=True)
+                
+                ok(f"  {github_path}")
+            
+            nl()
+            info("Los archivos están en GitHub. En el servidor destino ejecuta:")
+            print(f"  {C.CYN}omni gh restore{C.R}")
+            nl()
+        except Exception as err:
+            render_human_error(f"Error subiendo a GitHub: {err}", suggestion="Revisa tu conexión y token de GitHub.")
+
+    def _show_remote_recovery_instructions(self, target: SSHDestination, remote: Dict[str, Any], remote_path: str, github_authenticated: bool) -> None:
+        section("Instrucciones de recuperación en el host destino")
+        
+        ssh_command = f"ssh {target.user}@{target.host}"
+        if target.port != 22:
+            ssh_command += f" -p {target.port}"
+        
+        print(f"  1. Conéctate al host:")
+        print(f"     {C.CYN}{ssh_command}{C.R}")
+        nl()
+        
+        is_windows = remote.get("system_family") == "windows" or remote.get("system", "").lower().startswith("windows")
+        is_fresh = remote.get("fresh_server", False)
+        
+        if is_windows:
+            print(f"  2. En PowerShell, ejecuta:")
+            print(f"     {C.CYN}irm https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.ps1 | iex{C.R}")
+        else:
+            print(f"  2. Instala Omni en el host destino:")
+            print(f"     {C.CYN}curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash{C.R}")
+        
+        print()
+        print(f"  3. Los archivos están en {remote_path}:")
+        sources_map = {
+            "briefcase.json": "Maleta de migración",
+            "briefcase.restore.sh": "Script de restore",
+            ".state.tar.zst": "Estado del sistema",
+            ".secrets.tar.zst": "Secrets cifrados",
+        }
+        print(f"     {C.G3}ls {remote_path}{C.R}")
+        
+        nl()
+        if is_fresh:
+            print("  4a. Este es un servidor limpio. Ejecuta:")
+            if is_windows:
+                print(f"     {C.CYN}omni restore --manifest {remote_path}/manifest.json{C.R}")
+            else:
+                print(f"     {C.CYN}omni guide{C.R}")
+        else:
+            print("  4b. Este host ya tiene archivos. Ejecuta:")
+            print(f"     {C.CYN}omni connect --restore --path {remote_path}{C.R}")
+        
+        if github_authenticated:
+            nl()
+            print("  5. Alternativa: recovery desde GitHub (en cualquier host nuevo):")
+            print(f"     {C.CYN}omni gh restore --repo {target.owner}/{target.repo}{C.R}")
+        
+        nl()
+        ok("Todo listo. Los archivos fueron transferidos y tienes las instrucciones.")
+        print()
+        print(f"  Resumen:")
+        print(f"    SSH destino:  {ssh_command}")
+        print(f"    Archivos:    {remote_path}")
+        print(f"    GitHub:      {'disponible' if github_authenticated else 'no configurado'}")
+
+    def gh_restore_cmd(self, *, repo_slug: str = "") -> None:
+        print_logo(compact=True)
+        section("GitHub Restore")
+        
+        config = self.load_global_config().get("github") or {}
+        token = str(config.get("token") or "").strip()
+        if not token:
+            token = gh_cli_token()
+        
+        if not token:
+            render_human_error(
+                "GitHub no autenticado.",
+                suggestion="Ejecuta `omni gh login` para autenticar con GitHub.",
+            )
+            return
+        
+        owner = str(config.get("owner") or "").strip()
+        if not owner:
+            identity = github_identity(token)
+            owner = str(identity.get("login") or "unknown")
+        
+        resolved_repo = repo_slug or str(config.get("repo") or "omni-migrate-sync-private")
+        target = parse_repo_slug(resolved_repo, default_owner=owner)
+        
+        try:
+            entries = list_directory(target, "briefcases", token=token)
+        except Exception as err:
+            render_human_error(f"No pude listar los briefcases en GitHub: {err}", suggestion="Verifica el repo y token.")
+            return
+        
+        if not entries:
+            warn("No hay briefcases en el repositorio. Ejecuta `omni connect` primero para crear uno.")
+            return
+        
+        latest = latest_briefcase_entry(entries)
+        if not latest:
+            render_human_error("No pude encontrar el último briefcase.", suggestion="Verifica que hay archivos en briefcases/.")
+            return
+        
+        briefcase_name = latest.get("name", "")
+        nl()
+        info(f"Último briefcase: {briefcase_name}")
+        
+        if not self.confirm_step("¿Quieres descargarlo y restaurar ahora?", default=True):
+            print()
+            print("  Comando para restaurar más tarde:")
+            print(f"    {C.CYN}omni gh restore --repo {target.slug}{C.R}")
+            return
+        
+        with Spinner("Descargando briefcase...", color=C.PRIMARY) as spinner:
+            try:
+                content = download_text(target, f"briefcases/{briefcase_name}", token=token)
+                spinner.finish("Descarga completada", success=True)
+            except Exception as err:
+                render_human_error(f"Error descargando: {err}", suggestion="Revisa tu conexión.")
+                return
+        
+        download_dir = Path.home() / ".omni" / "downloads"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        local_briefcase = download_dir / briefcase_name
+        local_briefcase.write_text(content, encoding="utf-8")
+        
+        briefcase_data = json.loads(content)
+        restore_script = build_restore_script(briefcase_data, fresh_server=True)
+        
+        restore_script_path = download_dir / "briefcase.restore.sh"
+        restore_script_path.write_text(restore_script, encoding="utf-8")
+        restore_script_path.chmod(0o755)
+        
+        ok(f"Briefcase descargado en {local_briefcase}")
+        ok(f"Script de restore en {restore_script_path}")
+        
+        nl()
+        info("Ejecutando restore...")
+        print()
+        result = subprocess.run(
+            ["bash", str(restore_script_path)],
+            cwd=str(download_dir),
+            env={**os.environ, "OMNI_BRIEFCASE_PATH": str(local_briefcase)},
+        )
+        raise SystemExit(result.returncode)
+
+    def gh_init_remote_cmd(self, *, repo_slug: str = "") -> None:
+        print_logo(compact=True)
+        section("GitHub Init - Configurar recovery en servidor nuevo")
+        
+        config = self.load_global_config().get("github") or {}
+        token = str(config.get("token") or "").strip()
+        if not token:
+            token = gh_cli_token()
+        
+        if not token:
+            render_human_error("GitHub no autenticado.", suggestion="Ejecuta `omni gh login`.")
+            return
+        
+        owner = str(config.get("owner") or "").strip()
+        if not owner:
+            identity = github_identity(token)
+            owner = str(identity.get("login") or "unknown")
+        
+        resolved_repo = repo_slug or str(config.get("repo") or "omni-migrate-sync-private")
+        target = parse_repo_slug(resolved_repo, default_owner=owner)
+        
+        ensure_private_repo(target, token=token)
+        
+        print(f"  Repo: {target.slug}")
+        print(f"  Usuario: {owner}")
+        nl()
+        
+        print("  En un servidor NUEVO (Ubuntu/Debian/Linux):")
+        print(f"    {C.CYN}# 1. Instalar omni{C.R}")
+        print(f"    {C.CYN}curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash{C.R}")
+        nl()
+        print(f"    {C.CYN}# 2. Autenticar con GitHub (en el servidor nuevo){C.R}")
+        print(f"    {C.CYN}export GITHUB_TOKEN=<tu-token-personal>{C.R}")
+        print(f"    {C.CYN}omni gh login{C.R}")
+        nl()
+        print(f"    {C.CYN}# 3. Restaurar desde GitHub{C.R}")
+        print(f"    {C.CYN}omni gh restore --repo {target.slug}{C.R}")
+        nl()
+        print("  O con una sola instrucción:")
+        print(f"    {C.CYN}curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash && GITHUB_TOKEN=<token> omni gh restore --repo {target.slug}{C.R}")
+        nl()
+        
+        print("  Para crear un token de GitHub:")
+        print("    1. Ve a https://github.com/settings/tokens")
+        print("    2. Generate new token (classic)")
+        print("    3. Selecciona: repo, workflow")
+        print("    4. Copia el token y úsalo en el servidor nuevo")
+
     def push_cmd(self, *, manifest_path: str = "", home_root: str = "", profile: str = "", briefcase_path: str = "", repo_slug: str = "") -> None:
         print_logo(compact=True)
         section("GitHub Push")
@@ -4224,16 +4452,44 @@ class OmniCore:
             return
 
         self.clear_continue_state("connect")
+        
+        github_authenticated = bool(self.load_global_config().get("github", {}).get("token") or gh_cli_token())
+        
         render_action_summary(
             "Payload enviado",
             [
                 f"Destino: {target.target()}:{remote_path or '~/omni-transfer'}",
                 f"Transporte: {result.get('transport', resolved_transport)}",
                 f"Archivos: {len(sources)}",
-                "Siguiente paso: inicia sesión en el host destino y ejecuta `omni guide` o `omni restore`.",
             ],
             accent=C.GRN,
         )
+
+        nl()
+        section("Opciones post-transferencia")
+        
+        next_options = []
+        if github_authenticated:
+            next_options.append(self.t("Subir maleta a GitHub (para recovery en otro host)", "Upload briefcase to GitHub (for recovery on another host)"))
+        next_options.append(self.t("Solo mostrar comandos de recuperación remota", "Show remote recovery commands only"))
+        
+        selected_next = select_menu(
+            [opt for opt in next_options],
+            title=self.t("¿Qué quieres hacer ahora?", "What do you want to do now?"),
+            descriptions=[
+                self.t("Sube el briefcase.json a GitHub privado para poder recuperarlo en cualquier servidor nuevo con `omni gh restore`.", "Uploads briefcase.json to private GitHub repo so you can recover it on any fresh server with `omni gh restore`."),
+                self.t("Muestra los comandos para instalar Omni en el servidor destino y continuar la migración.", "Shows commands to install Omni on the destination server and continue migration."),
+            ],
+            icons=["☁️", "📋"],
+            default=0 if github_authenticated else 1,
+            show_index=True,
+            footer=self.t("↑/↓ elegir · Enter confirmar", "↑/↓ choose · Enter confirm"),
+        )
+        
+        if selected_next == 0 and github_authenticated:
+            self._push_briefcase_to_github(sources, remote.get("fresh_server", False))
+        
+        self._show_remote_recovery_instructions(target, remote, remote_path or "~/omni-transfer", github_authenticated)
 
     def show_doctor(self):
         print_logo(compact=True)
@@ -5593,6 +5849,12 @@ def main():
                 core.auth_cmd("github", repo_slug=args.repo)
             elif sub == "status":
                 core.gh_status_cmd()
+            elif sub in ("restore", "recover", "pull"):
+                core.gh_restore_cmd(repo_slug=args.repo or "")
+            elif sub == "push":
+                core.push_cmd(repo_slug=args.repo or "")
+            elif sub == "init":
+                core.gh_init_remote_cmd(repo_slug=args.repo or "")
             else:
                 core.auth_cmd("github", repo_slug=args.repo)
         elif action == "login":
