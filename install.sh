@@ -24,16 +24,20 @@ cleanup() {
 trap cleanup EXIT
 
 say() {
-  printf '==> %s\n' "$1"
+  printf '\033[2K\r==> %-60s' "$1"
 }
 
 ok() {
-  printf '  OK  %s\n' "$1"
+  printf '\033[2K\r  [\033[92mOK\033[0m] %s\n' "$1"
 }
 
 fail() {
-  printf '  ERR %s\n' "$1" >&2
+  printf '\033[2K\r  [\033[91mERR\033[0m] %s\n' "$1" >&2
   exit 1
+}
+
+info() {
+  printf '  %s\n' "$1"
 }
 
 ensure_cmd() {
@@ -42,21 +46,21 @@ ensure_cmd() {
 
 confirm_runtime_dependencies() {
   [ "$SKIP_DEP_BOOTSTRAP" = "1" ] && return 0
-  say "Preparing runtime dependencies"
-  printf '  INFO Paramiko habilita conexiones SSH por contraseña y transferencias SFTP en omni connect.\n'
-  printf '  INFO También instalaré rich, tqdm y prompt_toolkit para la interfaz del CLI.\n'
+  say "Installing runtime dependencies..."
+  info "  Paramiko: SSH + SFTP support for omni connect"
+  info "  rich, tqdm, prompt_toolkit: CLI interface"
   if [ "$ASSUME_YES" = "1" ] || ! [ -t 0 ] || ! [ -t 1 ]; then
-    ok "Runtime dependency bootstrap accepted automatically"
+    ok "Runtime deps accepted (auto)"
     return 0
   fi
-  printf '  ? Instalar dependencias runtime ahora? [Y/n] '
+  printf '  ? Install now? [Y/n] '
   read -r reply
   case "${reply:-Y}" in
     [Nn]*)
-      fail "Installation cancelled before runtime dependency bootstrap"
+      fail "Installation cancelled before runtime bootstrap"
       ;;
     *)
-      ok "Runtime dependency bootstrap accepted"
+      ok "Runtime bootstrap accepted"
       ;;
   esac
 }
@@ -124,14 +128,15 @@ stage_repo_from_archive() {
   local archive="$TMP_DIR/omnisync.tgz"
   local extract_dir="$TMP_DIR/extract"
   mkdir -p "$extract_dir" "$OMNI_HOME"
-  curl -fsSL "$ARCHIVE_URL" -o "$archive"
-  ok "Archive downloaded"
+  say "Downloading OmniSync..."
+  curl -fsSL "$ARCHIVE_URL" -o "$archive" && ok "Downloaded" || fail "Download failed"
+  say "Extracting..."
   tar \
     --exclude='*/home_snapshot' \
     --exclude='*/home_snapshot/*' \
     --exclude='*/home_private_snapshot' \
     --exclude='*/home_private_snapshot/*' \
-    -xzf "$archive" -C "$extract_dir"
+    -xzf "$archive" -C "$extract_dir" && ok "Extracted" || fail "Extract failed"
   local staged_root
   staged_root="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   [ -n "$staged_root" ] || fail "Could not locate extracted repository root"
@@ -146,13 +151,15 @@ bootstrap_runtime() {
   local python_bin
   python_bin="$(command -v python3 || true)"
   [ -n "$python_bin" ] || fail "python3 is required"
-  "$python_bin" -m venv "$RUNTIME_DIR"
+  say "Creating Python venv..."
+  "$python_bin" -m venv "$RUNTIME_DIR" && ok "venv created" || fail "venv failed"
   if [ "$SKIP_DEP_BOOTSTRAP" = "1" ]; then
     return
   fi
   confirm_runtime_dependencies
-  "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check --upgrade pip >/dev/null
-  "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check rich tqdm prompt_toolkit paramiko >/dev/null
+  say "Installing Python packages..."
+  "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check --upgrade pip >/dev/null 2>&1 && ok "pip updated" || fail "pip failed"
+  "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check rich tqdm prompt_toolkit paramiko >/dev/null 2>&1 && ok "Packages installed" || fail "Packages failed"
 }
 
 write_wrapper() {
@@ -252,16 +259,16 @@ ensure_cmd bash
 if [ -n "$LOCAL_REPO" ]; then
   say "Staging Omni from local repository"
   stage_repo_from_local "$LOCAL_REPO"
-  ok "Repository staged in $OMNI_HOME"
+  ok "Staged in $OMNI_HOME"
 else
-  say "Downloading OmniSync"
-  stage_repo_from_archive
-  ok "Repository staged in $OMNI_HOME"
+say "Downloading OmniSync"
+stage_repo_from_archive
+ok "Staged in $OMNI_HOME"
 fi
 
 say "Bootstrapping isolated runtime"
 bootstrap_runtime
-ok "Runtime ready at $RUNTIME_DIR"
+ok "Runtime ready"
 
 say "Creating CLI wrapper"
 write_wrapper
@@ -276,20 +283,8 @@ fi
 
 say "Validating Omni CLI"
 validate_install
-ok "Omni CLI is ready"
+ok "Omni ready!"
 
-cat <<EOF
-
-OmniSync installed.
-Open a new terminal if PATH changes are not visible yet.
-Commands:
-  omni
-  omni guide
-  omni connect --host <ip|fqdn> --user <user>
-
-One-line install:
-  curl -fsSL https://raw.githubusercontent.com/${REPO_SLUG}/main/install.sh | bash
-
-PowerShell:
-  irm https://raw.githubusercontent.com/${REPO_SLUG}/main/install.ps1 | iex
-EOF
+echo ""
+echo "  Run: omni guide"
+echo "  Or:  omni connect --host <ip> --user <user>"
