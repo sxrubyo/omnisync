@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +16,11 @@ from typing import Any, Dict, List, Optional
 
 
 API_BASE = "https://api.github.com"
+
+C = type("C", (), {
+    "CYN": "\033[36m",
+    "R": "\033[0m",
+})()
 
 
 def utc_now() -> str:
@@ -94,22 +100,32 @@ def gh_cli_token() -> str:
 
 
 def gh_device_auth() -> str:
-    device_url = f"{API_BASE}/devices/code"
-    token_url = f"{API_BASE}/oauth/access_token"
+    client_id = "Iv1.37586c2f99b0d11f"
+    device_url = "https://github.com/login/device/code"
+    token_url = "https://github.com/login/oauth/access_token"
 
     print("  Initiating GitHub Device Flow...")
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "omnisync",
-        "Content-Type": "application/json",
-    }
-    payload = json.dumps({"client_id": "Iv1.37586c2f99b0d11f", "scope": "repo"}).encode("utf-8")
-    request = urllib.request.Request(device_url, data=payload, headers=headers, method="POST")
+    payload = json.dumps({
+        "client_id": client_id,
+        "scope": "repo",
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        device_url,
+        data=payload,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
 
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             device_data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub device flow not available: {body}. Use PAT instead.")
     except Exception as e:
         raise RuntimeError(f"Failed to start device auth: {e}")
 
@@ -118,36 +134,57 @@ def gh_device_auth() -> str:
     verification_uri = device_data.get("verification_uri", "https://github.com/login/device")
     interval = int(device_data.get("interval", 5))
 
+    if not device_code or not user_code:
+        raise RuntimeError("GitHub device flow not supported. Use PAT instead.")
+
     print()
     print(f"  1. Open this URL in your browser:")
     print(f"     {verification_uri}")
     print()
-    print(f"  2. When prompted, enter this code:")
-    print(f"     {user_code}")
+    print(f"  2. Enter this code:")
+    print(f"     {C.CYN}{user_code}{C.R}")
     print()
-    print("  3. Wait... (or press Enter to retry)")
+    print("  3. Waiting for authorization...")
+    print("     Press Ctrl+C to cancel")
 
     token_payload = json.dumps({
-        "client_id": "Iv1.37586c2f99b0d11f",
+        "client_id": client_id,
         "device_code": device_code,
         "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
     }).encode("utf-8")
 
-    for _ in range(60):
-        token_request = urllib.request.Request(token_url, data=token_payload, headers=headers, method="POST")
+    import time
+    deadline = time.time() + 300
+
+    while time.time() < deadline:
+        token_request = urllib.request.Request(
+            token_url,
+            data=token_payload,
+            headers={"Accept": "application/json"},
+            method="POST",
+        )
         try:
-            with urllib.request.urlopen(token_request, timeout=30) as token_response:
-                token_data = json.loads(token_response.read().decode("utf-8"))
+            with urllib.request.urlopen(token_request, timeout=30) as resp:
+                token_data = json.loads(resp.read().decode("utf-8"))
                 access_token = token_data.get("access_token", "")
                 if access_token:
+                    print()
                     print("  [OK] GitHub authenticated!")
                     return access_token
+                error = token_data.get("error", "")
+                if error == "authorization_pending":
+                    pass
+                elif error == "slow_down":
+                    interval += 5
+                elif error == "access_denied":
+                    raise RuntimeError("Access denied. Please try again.")
+                else:
+                    raise RuntimeError(f"Auth error: {error}")
         except Exception:
             pass
-        import time
         time.sleep(interval)
 
-    raise RuntimeError("GitHub device auth timed out. Try `omni auth github` with a manual PAT instead.")
+    raise RuntimeError("Timeout waiting for GitHub authorization.")
 
 
 def github_identity(token: str) -> Dict[str, Any]:
