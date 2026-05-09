@@ -80,6 +80,7 @@ from github_ops import (
     github_identity,
     latest_briefcase_entry,
     list_directory,
+    load_global_config,
     parse_repo_slug,
     put_file,
     save_global_config,
@@ -3514,6 +3515,10 @@ class OmniCore:
         bullet("omni gemini    - Open local Gemini CLI if installed", C.GRN)
         bullet("omni opencode  - Open local OpenCode CLI if installed", C.GRN)
         bullet("omni auth github - Save GitHub auth for private briefcase sync", C.GRN)
+        bullet("omni gh login   - Quick GitHub auth alias", C.GRN)
+        bullet("omni gh status  - Show GitHub connection status", C.GRN)
+        bullet("omni gh restore - Download and restore from GitHub", C.GRN)
+        bullet("omni gh init    - Show one-liner for fresh server setup", C.GRN)
         bullet("omni push      - Push the latest briefcase to the private GitHub repo", C.GRN)
         bullet("omni pull      - Pull the latest briefcase from GitHub on a new host", C.GRN)
         nl()
