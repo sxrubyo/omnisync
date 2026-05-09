@@ -320,7 +320,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.1.11"
+OMNI_VERSION = "2.1.12"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -3086,7 +3086,7 @@ class OmniCore:
         auth_source = str(config.get("auth_source") or "unknown")
         authenticated_at = str(config.get("authenticated_at") or "n/a")
 
-        print(f"  Status:   {C.GRN}Conectado{C.RST}")
+        print(f"  Status:   {C.GRN}Conectado{C.R}")
         print(f"  User:     {owner}")
         print(f"  Repo:     {owner}/{repo}")
         print(f"  Source:   {auth_source}")
@@ -3101,7 +3101,7 @@ class OmniCore:
             print(f"  Email:    {email}")
             print(f"  Plan:     {plan}")
         except Exception as e:
-            print(f"  {C.YLW}Warning: No pude verificar identidad con GitHub API: {e}{C.RST}")
+            print(f"  {C.YLW}Warning: No pude verificar identidad con GitHub API: {e}{C.R}")
 
         print()
         print("  Comandos útiles:")

@@ -53,7 +53,9 @@ const SKIP_NAMES = new Set([
 ]);
 
 function ensureDir(target) {
-  fs.mkdirSync(target, { recursive: true });
+  if (!fs.existsSync(target)) {
+    fs.mkdirSync(target, { recursive: true });
+  }
 }
 
 function runtimeCandidates() {
