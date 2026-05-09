@@ -25,6 +25,14 @@ def run_cmd(cmd: str, cwd: str | None = None) -> Tuple[int, str, str]:
     return process.returncode, stdout.strip(), stderr.strip()
 
 
+def is_root() -> bool:
+    return os.geteuid() == 0
+
+
+def sudo_prefix() -> str:
+    return "" if is_root() else ("sudo " if command_exists("sudo") else "")
+
+
 def command_exists(name: str) -> bool:
     code, _, _ = run_cmd(f"command -v {name}")
     return code == 0
@@ -51,13 +59,13 @@ def docker_requires_sudo() -> bool:
 
 def build_compose_up_command(compose_file: Path) -> str:
     base = detect_compose_command()
-    prefix = "sudo " if docker_requires_sudo() else ""
+    prefix = sudo_prefix()
     return f"{prefix}{base} -f {str(compose_file)} up -d --build"
 
 
 def build_compose_down_command(compose_file: Path) -> str:
     base = detect_compose_command()
-    prefix = "sudo " if docker_requires_sudo() else ""
+    prefix = sudo_prefix()
     return f"{prefix}{base} -f {str(compose_file)} down --remove-orphans"
 
 
@@ -69,7 +77,7 @@ def ensure_docker_service_running() -> Dict[str, Any]:
     code, out, err = run_cmd("systemctl is-active docker")
     if code == 0 and out.strip() == "active":
         return {"changed": False, "status": "active"}
-    prefix = "sudo " if command_exists("sudo") else ""
+    prefix = sudo_prefix()
     code, out, err = run_cmd(f"{prefix}systemctl enable --now docker")
     if code != 0:
         raise RuntimeError(err or out or "Failed to start docker service")
@@ -94,7 +102,7 @@ def ensure_supported_node_runtime(target_major: int = 20) -> Dict[str, Any]:
     if not command_exists("apt-get") or not command_exists("curl"):
         return {"changed": False, "status": "unsupported", "target_major": target_major}
 
-    prefix = "sudo " if command_exists("sudo") else ""
+    prefix = sudo_prefix()
     legacy_conflicts: List[str] = []
     for package in ("libnode-dev", "nodejs-doc", "npm"):
         code, _, _ = run_cmd(f"dpkg -s {package}")
@@ -144,9 +152,10 @@ def install_apt_packages(packages: List[str]) -> Dict[str, Any]:
             unavailable.append(package)
     if not missing:
         return {"changed": [], "skipped": requested, "unavailable": unavailable, "resolved": resolved}
-    run_cmd("sudo apt-get update")
+    prefix = sudo_prefix()
+    run_cmd(f"{prefix}apt-get update")
     code, out, err = run_cmd(
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y " + " ".join(missing)
+        f"{prefix}DEBIAN_FRONTEND=noninteractive apt-get install -y " + " ".join(missing)
     )
     if code != 0:
         raise RuntimeError(err or out or "apt install failed")
@@ -172,10 +181,12 @@ def install_npm_global_packages(packages: List[str]) -> Dict[str, Any]:
         return {"changed": [], "skipped": requested}
     prefix_code, prefix_out, _ = run_cmd("npm config get prefix")
     install_prefix = prefix_out.strip() if prefix_code == 0 else ""
-    use_sudo = bool(install_prefix.startswith("/usr") and command_exists("sudo"))
-    if install_prefix and not os.access(install_prefix, os.W_OK) and command_exists("sudo"):
-        use_sudo = True
-    command = ("sudo " if use_sudo else "") + "npm install -g " + " ".join(missing)
+    use_sudo = bool(
+        (install_prefix.startswith("/usr") and command_exists("sudo")) 
+        or (install_prefix and not os.access(install_prefix, os.W_OK) and command_exists("sudo"))
+        or (is_root() and command_exists("sudo") and not os.access(install_prefix, os.W_OK))
+    )
+    command = (sudo_prefix() if use_sudo else "") + "npm install -g " + " ".join(missing)
     code, out, err = run_cmd(command)
     if code != 0:
         raise RuntimeError(err or out or "npm global install failed")
