@@ -3070,6 +3070,45 @@ class OmniCore:
             accent=C.GRN,
         )
 
+    def gh_status_cmd(self) -> None:
+        print_logo(compact=True)
+        section("GitHub Status")
+        config = self.load_global_config().get("github") or {}
+        token = str(config.get("token") or "").strip()
+
+        if not token:
+            print("[!] GitHub no autenticado.")
+            print("    Ejecuta: omni auth github")
+            return
+
+        owner = str(config.get("user") or config.get("owner") or "desconocido")
+        repo = str(config.get("repo") or "omni-migrate-sync-private")
+        auth_source = str(config.get("auth_source") or "unknown")
+        authenticated_at = str(config.get("authenticated_at") or "n/a")
+
+        print(f"  Status:   {C.GRN}Conectado{C.RST}")
+        print(f"  User:     {owner}")
+        print(f"  Repo:     {owner}/{repo}")
+        print(f"  Source:   {auth_source}")
+        print(f"  At:       {authenticated_at}")
+
+        try:
+            identity = github_identity(token)
+            name = identity.get("name") or identity.get("login") or owner
+            email = identity.get("email") or "n/a"
+            plan = identity.get("plan", {}).get("name", "n/a")
+            print(f"  Name:     {name}")
+            print(f"  Email:    {email}")
+            print(f"  Plan:     {plan}")
+        except Exception as e:
+            print(f"  {C.YLW}Warning: No pude verificar identidad con GitHub API: {e}{C.RST}")
+
+        print()
+        print("  Comandos útiles:")
+        print(f"    omni push --repo {owner}/{repo}    # Subir maleta a GitHub")
+        print(f"    omni pull --repo {owner}/{repo}    # Descargar maleta desde GitHub")
+        print(f"    omni connect --host <dest>         # Transferir por SSH/SFTP")
+
     def push_cmd(self, *, manifest_path: str = "", home_root: str = "", profile: str = "", briefcase_path: str = "", repo_slug: str = "") -> None:
         print_logo(compact=True)
         section("GitHub Push")
@@ -5548,6 +5587,16 @@ def main():
             core.chat_cmd(" ".join(remaining), accept_all=should_accept_all(args.accept_all, args.yes, env=os.environ))
         elif action == "auth":
             core.auth_cmd(remaining[0] if remaining else "", repo_slug=args.repo)
+        elif action == "gh":
+            sub = remaining[0] if remaining else ""
+            if sub in ("login", "auth"):
+                core.auth_cmd("github", repo_slug=args.repo)
+            elif sub == "status":
+                core.gh_status_cmd()
+            else:
+                core.auth_cmd("github", repo_slug=args.repo)
+        elif action == "login":
+            core.auth_cmd("github", repo_slug=args.repo)
         elif action == "push":
             core.push_cmd(
                 manifest_path=args.manifest,
