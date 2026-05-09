@@ -77,6 +77,7 @@ from github_ops import (
     download_text,
     ensure_private_repo,
     gh_cli_token,
+    gh_device_auth,
     github_identity,
     latest_briefcase_entry,
     list_directory,
@@ -320,7 +321,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.2.1"
+OMNI_VERSION = "2.3.0"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -3029,14 +3030,35 @@ class OmniCore:
         existing = self.load_global_config().get("github") or {}
 
         token = os.environ.get("GITHUB_TOKEN", "").strip() or gh_cli_token()
-        source = "env" if os.environ.get("GITHUB_TOKEN", "").strip() else "gh-cli"
-        if not token and self.is_interactive():
-            token = getpass.getpass("GitHub PAT (repo/private repo scope): ").strip()
-            source = "pat"
+        source = "env" if os.environ.get("GITHUB_TOKEN", "").strip() else ("gh-cli" if gh_cli_token() else "manual")
+        
+        if not token:
+            print("  No GitHub token found. Choose authentication method:")
+            print()
+            print("  1. Device Flow (browser-based, no token needed)")
+            print("  2. Enter Personal Access Token (PAT) manually")
+            print()
+            
+            if self.is_interactive():
+                choice = self.prompt_text("Select option", "1").strip()
+                if choice == "1":
+                    try:
+                        token = gh_device_auth()
+                        source = "device-flow"
+                    except Exception as e:
+                        render_human_error(f"Device auth failed: {e}", suggestion="Try option 2 with a PAT.")
+                        return
+                else:
+                    token = getpass.getpass("GitHub PAT (repo/private repo scope): ").strip()
+                    source = "pat"
+            else:
+                render_human_error("No token and non-interactive mode.", suggestion="Set GITHUB_TOKEN env or use interactive mode.")
+                return
+        
         if not token:
             render_human_error(
                 "No encontré un token de GitHub usable.",
-                suggestion="Haz `gh auth login` o exporta `GITHUB_TOKEN`, luego corre `omni auth github`.",
+                suggestion="Ejecuta `omni auth github` en modo interactivo.",
             )
             return
 

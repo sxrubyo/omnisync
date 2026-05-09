@@ -93,6 +93,63 @@ def gh_cli_token() -> str:
     return (result.stdout or "").strip()
 
 
+def gh_device_auth() -> str:
+    device_url = f"{API_BASE}/devices/code"
+    token_url = f"{API_BASE}/oauth/access_token"
+
+    print("  Initiating GitHub Device Flow...")
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "omnisync",
+        "Content-Type": "application/json",
+    }
+    payload = json.dumps({"client_id": "Iv1.37586c2f99b0d11f", "scope": "repo"}).encode("utf-8")
+    request = urllib.request.Request(device_url, data=payload, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            device_data = json.loads(response.read().decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"Failed to start device auth: {e}")
+
+    device_code = device_data.get("device_code", "")
+    user_code = device_data.get("user_code", "")
+    verification_uri = device_data.get("verification_uri", "https://github.com/login/device")
+    interval = int(device_data.get("interval", 5))
+
+    print()
+    print(f"  1. Open this URL in your browser:")
+    print(f"     {verification_uri}")
+    print()
+    print(f"  2. When prompted, enter this code:")
+    print(f"     {user_code}")
+    print()
+    print("  3. Wait... (or press Enter to retry)")
+
+    token_payload = json.dumps({
+        "client_id": "Iv1.37586c2f99b0d11f",
+        "device_code": device_code,
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    }).encode("utf-8")
+
+    for _ in range(60):
+        token_request = urllib.request.Request(token_url, data=token_payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(token_request, timeout=30) as token_response:
+                token_data = json.loads(token_response.read().decode("utf-8"))
+                access_token = token_data.get("access_token", "")
+                if access_token:
+                    print("  [OK] GitHub authenticated!")
+                    return access_token
+        except Exception:
+            pass
+        import time
+        time.sleep(interval)
+
+    raise RuntimeError("GitHub device auth timed out. Try `omni auth github` with a manual PAT instead.")
+
+
 def github_identity(token: str) -> Dict[str, Any]:
     return request_json("GET", f"{API_BASE}/user", token=token)
 
