@@ -220,11 +220,11 @@ def get_file_sha(target: GitHubTarget, path: str, *, token: str) -> str:
     return str(payload.get("sha") or "")
 
 
-def put_file(target: GitHubTarget, path: str, content: str, *, token: str, message: str) -> Dict[str, Any]:
+def put_bytes(target: GitHubTarget, path: str, content: bytes, *, token: str, message: str) -> Dict[str, Any]:
     sha = get_file_sha(target, path, token=token)
     payload: Dict[str, Any] = {
         "message": message,
-        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "content": base64.b64encode(content).decode("ascii"),
     }
     if sha:
         payload["sha"] = sha
@@ -236,17 +236,26 @@ def put_file(target: GitHubTarget, path: str, content: str, *, token: str, messa
     )
 
 
+def put_file(target: GitHubTarget, path: str, content: str, *, token: str, message: str) -> Dict[str, Any]:
+    return put_bytes(target, path, content.encode("utf-8"), token=token, message=message)
+
+
 def list_directory(target: GitHubTarget, path: str, *, token: str) -> List[Dict[str, Any]]:
     payload = request_json("GET", f"{API_BASE}/repos/{target.slug}/contents/{urllib.parse.quote(path)}", token=token)
     return payload if isinstance(payload, list) else []
 
 
-def download_text(target: GitHubTarget, path: str, *, token: str) -> str:
+def download_bytes(target: GitHubTarget, path: str, *, token: str) -> bytes:
     payload = request_json("GET", f"{API_BASE}/repos/{target.slug}/contents/{urllib.parse.quote(path)}", token=token)
     content = str(payload.get("content") or "")
     if not content:
-        return ""
-    return base64.b64decode(content.encode("ascii")).decode("utf-8")
+        return b""
+    return base64.b64decode(content.encode("ascii"))
+
+
+def download_text(target: GitHubTarget, path: str, *, token: str) -> str:
+    payload = download_bytes(target, path, token=token)
+    return payload.decode("utf-8") if payload else ""
 
 
 def latest_briefcase_entry(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

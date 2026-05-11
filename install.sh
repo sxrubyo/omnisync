@@ -47,7 +47,7 @@ ensure_cmd() {
 confirm_runtime_dependencies() {
   [ "$SKIP_DEP_BOOTSTRAP" = "1" ] && return 0
   say "Installing runtime dependencies..."
-  info "  Paramiko: SSH + SFTP support for omni connect"
+  info "  Paramiko habilita conexiones SSH por contraseña y SFTP para omni connect"
   info "  rich, tqdm, prompt_toolkit: CLI interface"
   if [ "$ASSUME_YES" = "1" ] || ! [ -t 0 ] || ! [ -t 1 ]; then
     ok "Runtime deps accepted (auto)"

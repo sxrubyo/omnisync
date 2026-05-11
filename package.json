@@ -1,6 +1,6 @@
 {
   "name": "omnisync",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "Portable migration CLI for SSH transfer, briefcase-based restore, and AI-assisted host rebuilds.",
   "license": "MIT",
   "author": "Black Boss",
@@ -30,6 +30,7 @@
     ".gemini/templates/*.toml",
     ".opencode/commands/omni-sync.md",
     ".opencode/commands/omni-agent.md",
+    "scripts/*.sh",
     "install.sh",
     "install.ps1",
     "bootstrap.ps1",

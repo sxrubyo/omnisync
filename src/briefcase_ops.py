@@ -83,18 +83,19 @@ def build_briefcase_manifest(
         "transport": {
             "preferred": list(TRANSPORT_PREFERENCE),
             "github": {
-                "role": "metadata-only",
+                "role": "private-briefcase-plus-home-snapshot",
                 "repo_slug": repo_slug,
                 "recommended_private_repo": True,
                 "suitable_for": [
                     "briefcase-manifest",
                     "restore-plan",
                     "sanitized-inventory",
+                    "full-home-private-snapshot",
+                    "encrypted-private-overlay",
                 ],
                 "not_suitable_for": [
-                    "full-home-state-archives",
-                    "secrets-bundles",
-                    "runtime-databases",
+                    "ssh-material",
+                    "git-credentials",
                 ],
             },
         },

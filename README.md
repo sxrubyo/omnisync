@@ -84,10 +84,10 @@ During install, OmniSync also detects Codex, Claude Code, Gemini CLI and OpenCod
 | `omni auth github` | Save GitHub credentials to `~/.omni/config.json` |
 | `omni gh login` | Quick GitHub auth alias |
 | `omni gh status` | Show GitHub connection status and user details |
-| `omni gh restore` | Download and restore briefcase from GitHub on any server |
+| `omni gh restore` | Download and restore the latest briefcase plus full-home snapshot from GitHub |
 | `omni gh init` | Show one-liner install+restore command for fresh servers |
-| `omni push` | Push briefcase to a private GitHub repo |
-| `omni pull` | Pull latest briefcase from GitHub on a new machine |
+| `omni push` | Push briefcase and, for `full-home`, a private home snapshot to GitHub |
+| `omni pull` | Pull latest briefcase and home snapshot from GitHub on a new machine |
 | `omni doctor` | Health check — bundles, config, drift, placeholder hosts |
 | `omni detect-ip` | Show current host identity and files with drift |
 | `omni purge` | Free disk — dry run first, then `--yes` to execute |
@@ -127,15 +127,14 @@ Output: `briefcase.json` + `briefcase.restore.sh` — portable, deterministic, r
 
 ## GitHub Recovery (Private Sync)
 
-OmniSync can upload your briefcase to a private GitHub repo and restore it on any fresh server:
+OmniSync can upload your briefcase and, for `full-home`, a private snapshot of `/home/ubuntu` to a private GitHub repo and restore it on any fresh server:
 
 ```bash
 # 1. Authenticate with GitHub
 omni gh login
 
-# 2. Connect to remote server and auto-upload
-omni connect --host <ip> --user <user>
-# → After SSH transfer, choose "Upload to GitHub"
+# 2. Push the current host into a private repo
+omni push --profile full-home --repo owner/repo
 
 # 3. On any NEW server, restore with one command:
 curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash && \
@@ -154,7 +153,7 @@ omni gh restore --repo owner/repo
 |---|---|
 | `omni gh` | Quick GitHub auth |
 | `omni gh status` | Show connection status |
-| `omni gh restore` | Download + restore from GitHub |
+| `omni gh restore` | Download + restore briefcase and full-home snapshot from GitHub |
 | `omni gh init` | Show fresh server setup command |
 | `omni gh push` | Manual push to GitHub |
 

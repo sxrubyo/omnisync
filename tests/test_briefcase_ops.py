@@ -56,7 +56,7 @@ class BriefcaseOpsTests(unittest.TestCase):
         self.assertEqual(briefcase["source"]["platform"]["system"], "linux")
         self.assertEqual(briefcase["inventory"]["summary"]["included_state_count"], 1)
         self.assertEqual(briefcase["inventory"]["summary"]["discovered_noise_count"], 1)
-        self.assertEqual(briefcase["transport"]["github"]["role"], "metadata-only")
+        self.assertEqual(briefcase["transport"]["github"]["role"], "private-briefcase-plus-home-snapshot")
 
     def test_build_restore_plan_marks_same_package_manager_as_applicable(self):
         briefcase = {

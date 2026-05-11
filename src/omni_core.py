@@ -81,12 +81,19 @@ from github_ops import (
     github_identity,
     latest_briefcase_entry,
     list_directory,
+    put_bytes,
     load_global_config,
     parse_repo_slug,
     put_file,
     save_global_config,
 )
 from guide_ops import build_guide_entries
+from home_snapshot_ops import (
+    apply_downloaded_home_snapshot,
+    create_home_snapshot_bundle,
+    download_home_snapshot_bundle,
+    upload_home_snapshot_bundle,
+)
 from host_inventory import (
     DEFAULT_PROFILE,
     FULL_HOME_PROFILE,
@@ -321,7 +328,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.3.2"
+OMNI_VERSION = "2.4.0"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -2993,7 +3000,7 @@ class OmniCore:
             hint(self.t("GitHub no está autenticado todavía. Haz `gh auth login` o `omni auth github` cuando quieras sincronizar la maleta a un repo privado.", "GitHub is not authenticated yet. Run `gh auth login` or `omni auth github` when you want to sync the briefcase to a private repo."))
             return
         if not self.is_interactive():
-            hint(self.t("GitHub listo. Ejecuta `omni push --briefcase <archivo>` para subir esta maleta a un repo privado.", "GitHub is ready. Run `omni push --briefcase <file>` to upload this briefcase to a private repo."))
+            hint(self.t("GitHub listo. Ejecuta `omni push --profile full-home` para subir la maleta y el snapshot privado del home a un repo privado.", "GitHub is ready. Run `omni push --profile full-home` to upload the briefcase and private home snapshot to a private repo."))
             return
         if not self.confirm_step(self.t("¿Quieres crear o reutilizar un repo privado de GitHub y subir esta maleta ahora?", "Do you want to create or reuse a private GitHub repo and upload this briefcase now?"), default=False):
             return
@@ -3160,10 +3167,10 @@ class OmniCore:
                     github_path = f"restore-scripts/{timestamp}_{file_name}"
                 else:
                     github_path = f"bundles/{timestamp}_{file_name}"
-                
-                content = source.read_text(encoding="utf-8")
+
+                payload = source.read_bytes()
                 with Spinner(f"Subiendo {file_name}...", color=C.PRIMARY) as spinner:
-                    put_file(target, github_path, content, token=token, message=f"omni connect: {file_name}")
+                    put_bytes(target, github_path, payload, token=token, message=f"omni connect: {file_name}")
                     spinner.finish(f"{file_name} subido", success=True)
                 
                 ok(f"  {github_path}")
@@ -3218,9 +3225,13 @@ class OmniCore:
             print(f"     {C.CYN}omni connect --restore --path {remote_path}{C.R}")
         
         if github_authenticated:
+            gh_config = self.load_global_config().get("github") or {}
+            gh_owner = str(gh_config.get("owner") or "").strip()
+            gh_repo = str(gh_config.get("repo") or "omni-migrate-sync-private").strip()
+            gh_slug = f"{gh_owner}/{gh_repo}" if gh_owner else gh_repo
             nl()
             print("  5. Alternativa: recovery desde GitHub (en cualquier host nuevo):")
-            print(f"     {C.CYN}omni gh restore --repo {target.owner}/{target.repo}{C.R}")
+            print(f"     {C.CYN}omni gh restore --repo {gh_slug}{C.R}")
         
         nl()
         ok("Todo listo. Los archivos fueron transferidos y tienes las instrucciones.")
@@ -3291,17 +3302,35 @@ class OmniCore:
         download_dir.mkdir(parents=True, exist_ok=True)
         local_briefcase = download_dir / briefcase_name
         local_briefcase.write_text(content, encoding="utf-8")
-        
+
         briefcase_data = json.loads(content)
         restore_script = build_restore_script(briefcase_data, fresh_server=True)
         
         restore_script_path = download_dir / "briefcase.restore.sh"
         restore_script_path.write_text(restore_script, encoding="utf-8")
         restore_script_path.chmod(0o755)
-        
+
         ok(f"Briefcase descargado en {local_briefcase}")
         ok(f"Script de restore en {restore_script_path}")
-        
+
+        snapshot_bundle = None
+        snapshot_dir = download_dir / "home-snapshot"
+        with Spinner("Descargando snapshot completo del home...", color=C.PRIMARY) as spinner:
+            try:
+                snapshot_bundle = download_home_snapshot_bundle(target, token=token, output_dir=snapshot_dir)
+                if snapshot_bundle:
+                    spinner.finish("Snapshot del home descargado", success=True)
+                else:
+                    spinner.finish("No había snapshot completo en GitHub", success=False)
+            except Exception as err:
+                render_human_error(
+                    f"No pude descargar el snapshot completo del home: {err}",
+                    suggestion="Vuelve a ejecutar `omni push --profile full-home` en el host origen.",
+                )
+                return
+        if snapshot_bundle:
+            ok(f"Snapshot del home en {snapshot_bundle['root']}")
+
         nl()
         info("Ejecutando restore...")
         print()
@@ -3310,7 +3339,24 @@ class OmniCore:
             cwd=str(download_dir),
             env={**os.environ, "OMNI_BRIEFCASE_PATH": str(local_briefcase)},
         )
-        raise SystemExit(result.returncode)
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
+
+        if snapshot_bundle:
+            info("Aplicando snapshot completo del home...")
+            snapshot_result = apply_downloaded_home_snapshot(Path(snapshot_bundle["root"]), target_root=Path.home())
+            if snapshot_result.returncode != 0:
+                render_human_error(
+                    snapshot_result.stderr or snapshot_result.stdout or "El restore del snapshot completo falló.",
+                    suggestion="Verifica espacio en disco, permisos y la passphrase del snapshot privado.",
+                )
+                raise SystemExit(snapshot_result.returncode)
+            render_action_summary(
+                "Snapshot del home restaurado",
+                (snapshot_result.stdout or "Snapshot restaurado.").strip().splitlines()[:8],
+                accent=C.GRN,
+            )
+        raise SystemExit(0)
 
     def gh_init_remote_cmd(self, *, repo_slug: str = "") -> None:
         print_logo(compact=True)
@@ -3387,14 +3433,32 @@ class OmniCore:
             briefcase_text = json.dumps(briefcase, indent=2, ensure_ascii=False) + "\n"
             restore_script = str(export["restore_script"])
 
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        now_utc = datetime.now(timezone.utc)
+        stamp = now_utc.strftime("%Y%m%d-%H%M%S")
+        created_at = now_utc.isoformat().replace("+00:00", "Z")
         host = socket.gethostname().split(".", 1)[0] or "host"
         briefcase_remote_path = f"briefcases/{stamp}-{host}.json"
         restore_remote_path = f"briefcases/{stamp}-{host}.restore.sh"
+        snapshot_manifest_path = "not-created"
+        resolved_profile = str(profile or briefcase.get("source", {}).get("profile") or "").strip().lower().replace("_", "-")
+        include_home_snapshot = resolved_profile == FULL_HOME_PROFILE
 
         if not self.is_dry_run():
             put_file(target, briefcase_remote_path, briefcase_text, token=token, message=f"Add briefcase {stamp} from {host}")
             put_file(target, restore_remote_path, restore_script, token=token, message=f"Add restore script {stamp} from {host}")
+            if include_home_snapshot:
+                effective_home_root = home_root or str(Path.home())
+                snapshot_id = f"{stamp}-{host}"
+                snapshot_bundle = create_home_snapshot_bundle(
+                    APP_DIR,
+                    home_root=effective_home_root,
+                    snapshot_id=snapshot_id,
+                    host=host,
+                    stamp=created_at,
+                    mode="private",
+                )
+                upload_result = upload_home_snapshot_bundle(target, token=token, bundle=snapshot_bundle, app_dir=APP_DIR)
+                snapshot_manifest_path = str(upload_result.get("manifest_path") or snapshot_manifest_path)
         else:
             warn("Dry run activo: no se subieron archivos a GitHub.")
         render_action_summary(
@@ -3403,6 +3467,7 @@ class OmniCore:
                 f"Repo: {target.slug}",
                 f"Briefcase: {briefcase_remote_path}",
                 f"Restore: {restore_remote_path}",
+                f"Home snapshot: {snapshot_manifest_path if include_home_snapshot else 'skipped (profile != full-home)'}",
             ],
             accent=C.GRN,
         )
@@ -3447,12 +3512,18 @@ class OmniCore:
                 restore_path.write_text(restore_text, encoding="utf-8")
                 restore_path.chmod(0o755)
 
+        snapshot_bundle = None
+        snapshot_root = download_dir / "home-snapshot"
+        if not self.is_dry_run():
+            snapshot_bundle = download_home_snapshot_bundle(target, token=token, output_dir=snapshot_root)
+
         render_action_summary(
             "GitHub Pull",
             [
                 f"Repo: {target.slug}",
                 f"Briefcase: {briefcase_path}",
                 f"Restore script: {restore_path if restore_entry else 'missing'}",
+                f"Home snapshot: {snapshot_bundle['root'] if snapshot_bundle else 'missing'}",
             ],
             accent=C.GRN,
         )
@@ -3474,6 +3545,19 @@ class OmniCore:
                 (result.stdout or "Restore script ejecutado.").strip().splitlines()[:8],
                 accent=C.GRN,
             )
+            if snapshot_bundle:
+                snapshot_result = apply_downloaded_home_snapshot(Path(snapshot_bundle["root"]), target_root=Path.home())
+                if snapshot_result.returncode != 0:
+                    render_human_error(
+                        snapshot_result.stderr or snapshot_result.stdout or "El restore del snapshot completo falló.",
+                        suggestion="Revisa espacio en disco y la passphrase del snapshot privado.",
+                    )
+                    return
+                render_action_summary(
+                    "Snapshot aplicado",
+                    (snapshot_result.stdout or "Snapshot restaurado.").strip().splitlines()[:8],
+                    accent=C.GRN,
+                )
 
     def show_help(self):
         """Show help menu."""
@@ -3539,10 +3623,10 @@ class OmniCore:
         bullet("omni auth github - Save GitHub auth for private briefcase sync", C.GRN)
         bullet("omni gh login   - Quick GitHub auth alias", C.GRN)
         bullet("omni gh status  - Show GitHub connection status", C.GRN)
-        bullet("omni gh restore - Download and restore from GitHub", C.GRN)
+        bullet("omni gh restore - Download and restore briefcase + full-home snapshot from GitHub", C.GRN)
         bullet("omni gh init    - Show one-liner for fresh server setup", C.GRN)
-        bullet("omni push      - Push the latest briefcase to the private GitHub repo", C.GRN)
-        bullet("omni pull      - Pull the latest briefcase from GitHub on a new host", C.GRN)
+        bullet("omni push      - Push the latest briefcase and full-home snapshot to the private GitHub repo", C.GRN)
+        bullet("omni pull      - Pull the latest briefcase and full-home snapshot from GitHub on a new host", C.GRN)
         nl()
 
         print("  " + q(C.W, "ADVANCED COMMANDS", bold=True))
@@ -3578,8 +3662,8 @@ class OmniCore:
         bullet("omni gemini    - Pass through to local Gemini CLI", C.PRIMARY)
         bullet("omni opencode  - Pass through to local OpenCode CLI", C.PRIMARY)
         bullet("omni auth      - Configure GitHub auth for push/pull", C.PRIMARY)
-        bullet("omni push      - Upload briefcase + restore script to GitHub", C.PRIMARY)
-        bullet("omni pull      - Download latest GitHub briefcase locally", C.PRIMARY)
+        bullet("omni push      - Upload briefcase + restore script + home snapshot to GitHub", C.PRIMARY)
+        bullet("omni pull      - Download latest GitHub briefcase + home snapshot locally", C.PRIMARY)
         bullet("omni bridge    - Create/send/receive migration packs", C.PRIMARY)
         bullet("omni timer-install - Install daily timer + change watcher service", C.PRIMARY)
         bullet("omni purge - Delete transferred state and repo artifacts to free disk", C.PRIMARY)
@@ -4497,14 +4581,14 @@ class OmniCore:
         
         next_options = []
         if github_authenticated:
-            next_options.append(self.t("Subir maleta a GitHub (para recovery en otro host)", "Upload briefcase to GitHub (for recovery on another host)"))
+            next_options.append(self.t("Subir maleta a GitHub (para recovery en otro host)", "Upload migration package to GitHub (for recovery on another host)"))
         next_options.append(self.t("Solo mostrar comandos de recuperación remota", "Show remote recovery commands only"))
         
         selected_next = select_menu(
             [opt for opt in next_options],
             title=self.t("¿Qué quieres hacer ahora?", "What do you want to do now?"),
             descriptions=[
-                self.t("Sube el briefcase.json a GitHub privado para poder recuperarlo en cualquier servidor nuevo con `omni gh restore`.", "Uploads briefcase.json to private GitHub repo so you can recover it on any fresh server with `omni gh restore`."),
+                self.t("Sube briefcase, restore script y bundles locales a GitHub privado para tener recovery desde otro host.", "Uploads the briefcase, restore script and local bundles to private GitHub so you can recover them from another host."),
                 self.t("Muestra los comandos para instalar Omni en el servidor destino y continuar la migración.", "Shows commands to install Omni on the destination server and continue migration."),
             ],
             icons=["☁️", "📋"],

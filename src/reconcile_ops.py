@@ -30,7 +30,7 @@ def is_root() -> bool:
 
 
 def sudo_prefix() -> str:
-    return "" if is_root() else ("sudo " if command_exists("sudo") else "")
+    return "" if is_root() else "sudo "
 
 
 def command_exists(name: str) -> bool:
@@ -59,13 +59,13 @@ def docker_requires_sudo() -> bool:
 
 def build_compose_up_command(compose_file: Path) -> str:
     base = detect_compose_command()
-    prefix = sudo_prefix()
+    prefix = "sudo " if docker_requires_sudo() else ""
     return f"{prefix}{base} -f {str(compose_file)} up -d --build"
 
 
 def build_compose_down_command(compose_file: Path) -> str:
     base = detect_compose_command()
-    prefix = sudo_prefix()
+    prefix = "sudo " if docker_requires_sudo() else ""
     return f"{prefix}{base} -f {str(compose_file)} down --remove-orphans"
 
 
