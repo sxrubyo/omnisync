@@ -2,16 +2,17 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from github_ops import (
     GitHubTarget,
-    download_bytes,
     download_text,
     list_directory,
-    put_bytes,
 )
 
 
@@ -97,36 +98,91 @@ def create_home_snapshot_bundle(
     }
 
 
+def _run_git(args: List[str], *, token: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory(prefix="omni-git-auth-") as tmp:
+        askpass = Path(tmp) / "askpass.sh"
+        askpass.write_text(
+            "#!/usr/bin/env sh\n"
+            "case \"$1\" in\n"
+            "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+            "  *Password*) printf '%s\\n' \"$OMNI_GITHUB_TOKEN\" ;;\n"
+            "  *) printf '%s\\n' \"$OMNI_GITHUB_TOKEN\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        askpass.chmod(0o700)
+        env = {
+            **os.environ,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": str(askpass),
+            "OMNI_GITHUB_TOKEN": token,
+        }
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
 def upload_home_snapshot_bundle(target: GitHubTarget, *, token: str, bundle: Dict[str, Any], app_dir: Path) -> Dict[str, Any]:
     manifest = bundle["manifest"]
     root_prefix = str(bundle["root_prefix"])
     manifest_path = str(bundle["manifest_path"])
     manifest_text = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
-    put_bytes(
-        target,
-        manifest_path,
-        manifest_text.encode("utf-8"),
-        token=token,
-        message=f"Add home snapshot manifest {manifest['snapshot_id']}",
-    )
-
+    repo_url = f"https://github.com/{target.slug}.git"
     uploaded: List[str] = []
-    for entry in manifest.get("files", []):
-        rel_path = str(entry.get("relative_path") or "").strip()
-        if not rel_path:
-            continue
-        source = app_dir / rel_path
-        if not source.exists():
-            continue
-        remote_path = f"{root_prefix}/{rel_path}"
-        put_bytes(
-            target,
-            remote_path,
-            source.read_bytes(),
+
+    with tempfile.TemporaryDirectory(prefix="omni-home-snapshot-upload-") as tmp:
+        clone_root = Path(tmp) / "repo"
+        clone_result = _run_git(["clone", "--depth", "1", repo_url, str(clone_root)], token=token)
+        if clone_result.returncode != 0:
+            raise RuntimeError(clone_result.stderr or clone_result.stdout or "Git clone failed")
+
+        _run_git(["config", "user.name", "OmniSync"], token=token, cwd=clone_root)
+        _run_git(["config", "user.email", "omni@local.invalid"], token=token, cwd=clone_root)
+
+        manifest_local = clone_root / manifest_path
+        manifest_local.parent.mkdir(parents=True, exist_ok=True)
+        manifest_local.write_text(manifest_text, encoding="utf-8")
+
+        snapshot_root = clone_root / root_prefix
+        for entry in manifest.get("files", []):
+            rel_path = str(entry.get("relative_path") or "").strip()
+            if not rel_path:
+                continue
+            source = app_dir / rel_path
+            if not source.exists():
+                continue
+            destination = snapshot_root / rel_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            uploaded.append(f"{root_prefix}/{rel_path}")
+
+        add_result = _run_git(["add", "home-snapshots"], token=token, cwd=clone_root)
+        if add_result.returncode != 0:
+            raise RuntimeError(add_result.stderr or add_result.stdout or "Git add failed")
+
+        status_result = _run_git(["status", "--porcelain"], token=token, cwd=clone_root)
+        if status_result.returncode != 0:
+            raise RuntimeError(status_result.stderr or status_result.stdout or "Git status failed")
+        if not (status_result.stdout or "").strip():
+            return {"manifest_path": manifest_path, "uploaded": uploaded, "snapshot_id": manifest["snapshot_id"]}
+
+        commit_result = _run_git(
+            ["commit", "-m", f"Add home snapshot {manifest['snapshot_id']}"],
             token=token,
-            message=f"Add home snapshot file {manifest['snapshot_id']}: {rel_path}",
+            cwd=clone_root,
         )
-        uploaded.append(remote_path)
+        if commit_result.returncode != 0:
+            raise RuntimeError(commit_result.stderr or commit_result.stdout or "Git commit failed")
+
+        push_result = _run_git(["push", "origin", "HEAD:main"], token=token, cwd=clone_root)
+        if push_result.returncode != 0:
+            raise RuntimeError(push_result.stderr or push_result.stdout or "Git push failed")
+
     return {"manifest_path": manifest_path, "uploaded": uploaded, "snapshot_id": manifest["snapshot_id"]}
 
 
@@ -155,17 +211,41 @@ def download_home_snapshot_bundle(target: GitHubTarget, *, token: str, output_di
     manifest_local.write_text(manifest_text, encoding="utf-8")
 
     snapshot_id = str(manifest.get("snapshot_id") or "")
-    remote_root = f"home-snapshots/{snapshot_id}"
-    for entry in manifest.get("files", []):
-        rel_path = str(entry.get("relative_path") or "").strip()
-        if not rel_path:
-            continue
-        payload = download_bytes(target, f"{remote_root}/{rel_path}", token=token)
-        local_path = snapshot_root / rel_path
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_bytes(payload)
-        if entry.get("executable"):
-            local_path.chmod(0o755)
+    repo_url = f"https://github.com/{target.slug}.git"
+    with tempfile.TemporaryDirectory(prefix="omni-home-snapshot-download-") as tmp:
+        clone_root = Path(tmp) / "repo"
+        clone_result = _run_git(
+            ["clone", "--depth", "1", "--filter=blob:none", "--sparse", repo_url, str(clone_root)],
+            token=token,
+        )
+        if clone_result.returncode != 0:
+            raise RuntimeError(clone_result.stderr or clone_result.stdout or "Git clone failed")
+        sparse_result = _run_git(
+            [
+                "sparse-checkout",
+                "set",
+                f"home-snapshots/{snapshot_id}",
+                f"home-snapshots/{snapshot_id}.manifest.json",
+            ],
+            token=token,
+            cwd=clone_root,
+        )
+        if sparse_result.returncode != 0:
+            raise RuntimeError(sparse_result.stderr or sparse_result.stdout or "Git sparse-checkout failed")
+
+        source_root = clone_root / "home-snapshots" / snapshot_id
+        for entry in manifest.get("files", []):
+            rel_path = str(entry.get("relative_path") or "").strip()
+            if not rel_path:
+                continue
+            source = source_root / rel_path
+            if not source.exists():
+                raise FileNotFoundError(f"Missing snapshot payload in repo clone: {source}")
+            local_path = snapshot_root / rel_path
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, local_path)
+            if entry.get("executable"):
+                local_path.chmod(0o755)
 
     return {
         "manifest": manifest,

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.4.1 - 2026-05-11
+
+- corregido `refresh_home_snapshot.sh` para tolerar archivos vivos que cambian durante el tar del overlay privado sin abortar el snapshot completo
+- verificado el snapshot privado real de `/home/ubuntu` sobre un host activo antes de repetir el `omni push`
+
 ## 2.4.0 - 2026-05-11
 
 - integrado `full-home` real sobre GitHub privado: `omni push`, `omni pull` y `omni gh restore` ya mueven briefcase más snapshot completo del home

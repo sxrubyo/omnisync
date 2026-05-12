@@ -13,7 +13,7 @@ PUBLIC_INVENTORY_DIR="$PUBLIC_SNAPSHOT_ROOT/inventory"
 PRIVATE_SNAPSHOT_ROOT="$ROOT_DIR/home_private_snapshot"
 PRIVATE_ARCHIVE_DIR="$PRIVATE_SNAPSHOT_ROOT/archives"
 PRIVATE_INVENTORY_DIR="$PRIVATE_SNAPSHOT_ROOT/inventory"
-PRIVATE_CHUNK_SIZE="${HOME_PRIVATE_SNAPSHOT_CHUNK_SIZE:-95m}"
+PRIVATE_CHUNK_SIZE="${HOME_PRIVATE_SNAPSHOT_CHUNK_SIZE:-40m}"
 
 ALLOWLIST_DIRS=(
   ".agents"
@@ -401,6 +401,10 @@ archive_target() {
   local passphrase_file="$2"
   local target_type="dir"
   local part_count=0
+  local tar_stderr
+  local pipeline_rc=0
+  local tar_rc=0
+  local pipe_status=()
 
   if [[ ! -e "$src" ]]; then
     return 0
@@ -414,9 +418,33 @@ archive_target() {
   prefix="$PRIVATE_ARCHIVE_DIR/$slug.tar.gz.enc.part-"
   rm -f "$prefix"*
 
-  tar -czf - -C "$HOME_ROOT" "${PRIVATE_TAR_EXCLUDES[@]}" "$name" \
+  tar_stderr="$(mktemp)"
+  set +e
+  tar -czf - -C "$HOME_ROOT" "${PRIVATE_TAR_EXCLUDES[@]}" "$name" 2>"$tar_stderr" \
     | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "file:$passphrase_file" \
     | split -b "$PRIVATE_CHUNK_SIZE" - "$prefix"
+  pipe_status=("${PIPESTATUS[@]}")
+  set -e
+  tar_rc="${pipe_status[0]:-0}"
+  pipeline_rc=0
+  for status in "${pipe_status[@]}"; do
+    if (( status != 0 )); then
+      pipeline_rc="$status"
+      break
+    fi
+  done
+
+  if (( pipeline_rc != 0 )); then
+    if (( tar_rc == 1 )) && grep -q "file changed as we read it" "$tar_stderr"; then
+      printf 'warning: snapshot target changed while archiving: %s\n' "$name" >&2
+    else
+      cat "$tar_stderr" >&2 || true
+      rm -f "$tar_stderr"
+      rm -f "$prefix"*
+      return "$pipeline_rc"
+    fi
+  fi
+  rm -f "$tar_stderr"
 
   while IFS= read -r _part; do
     part_count=$((part_count + 1))
