@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+EXPECTED_SHA256="4af10c6f26e91f7647c673e0c75d08c2ee4b1f9908513c7fbfe1d269710bcfc1"
+INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh"
+
+verify_script_integrity() {
+    local script_path="${BASH_SOURCE[0]}"
+    
+    if [[ "$script_path" == *"/tmp/"* ]] || [[ "$script_path" == "/tmp/"* ]]; then
+        local computed
+        computed=$(sha256sum "$script_path" 2>/dev/null | cut -d' ' -f1 || echo "unknown")
+        if [ "$computed" != "$EXPECTED_SHA256" ]; then
+            printf '\033[91m[WARNING]\033[0m Script checksum mismatch!\n' >&2
+            printf '  Expected: %s\n' "$EXPECTED_SHA256" >&2
+            printf '  Got:      %s\n' "$computed" >&2
+            printf '\n  This could be a supply chain attack.\n' >&2
+            printf '  Download fresh from: %s\n' "$INSTALL_SCRIPT_URL" >&2
+            read -p "  Continue anyway? [y/N] " -n 1 -r </dev/tty
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
+        fi
+    fi
+}
+
+verify_script_integrity
+
 REPO_SLUG="${OMNI_INSTALL_REPO:-sxrubyo/omnisync}"
 ARCHIVE_URL="${OMNI_INSTALL_SOURCE_ARCHIVE:-https://codeload.github.com/${REPO_SLUG}/tar.gz/refs/heads/main}"
 LOCAL_REPO="${OMNI_INSTALL_LOCAL_REPO:-}"

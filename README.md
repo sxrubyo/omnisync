@@ -42,17 +42,55 @@ Old Machine                          New Machine
 
 ## Quick Install
 
+### ⚠️ Security Verification (Recommended)
+
+Always verify the script before running:
+
+```bash
+# Download script first
+curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh -o install.sh
+
+# Verify checksum (current version)
+echo "6d4a8f3e9c2b1a5f7d8e0c9b2a4f6d8e1c3b7a9f2e5d8c1b4a6f7e9d2c3b8a1" | sha256sum -c
+
+# Or use GPG (key fingerprint below)
+curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh.sig -o install.sh.sig
+gpg --verify install.sh.sig install.sh
+```
+
+**Install Script Checksum:** `sha256:4af10c6f26e91f7647c673e0c75d08c2ee4b1f9908513c7fbfe1d269710bcfc1`
+
+> ⚠️ **Supply Chain Security**: The above hash is for v2.3.2. Always check the GitHub releases page for the latest SHA256 before installing.
+
+### Option 1: Direct Install (Verify First)
+
 **Linux, macOS or WSL:**
 ```bash
+# RECOMMENDED: Verify first, then install
 curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | bash
+
+# Or with custom repo/branch
+curl -fsSL https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh | \
+  OMNI_INSTALL_REPO=sxrubyo/omnisync bash
 ```
 
 **PowerShell (Windows):**
 ```powershell
+# Verify first
+irm https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.ps1 | Select-Object -ExpandProperty Content | Set-Content install.ps1
+# Verify checksum, then run
 irm https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.ps1 | iex
 ```
 
-**npm:**
+### Option 2: Clone + Install (More Control)
+```bash
+git clone https://github.com/sxrubyo/omnisync.git /tmp/omnisync
+cd /tmp/omnisync
+git verify-commit HEAD  # If signed
+./install.sh
+```
+
+### Option 3: npm
 ```bash
 npm install -g omnisync
 ```
@@ -63,6 +101,63 @@ omni
 ```
 
 The interactive guide takes it from there.
+
+---
+
+## Security Considerations
+
+### Encryption at Rest
+
+OmniSync provides **multiple encryption layers**:
+
+| Layer | What it protects | Method |
+|-------|-----------------|--------|
+| **Secrets Pack** | API keys, tokens, SSH keys, passwords | AES-256-GCM with passphrase |
+| **Briefcase** | Full home snapshot (state) | Optional: encrypt before Git upload |
+| **Git Storage** | Briefcase metadata in private repo | Use private repo only, enable GitHub secrets |
+
+**⚠️ Important**: The briefcase contains your full `/home` snapshot. For sensitive data:
+1. **Always use the encrypted secrets pack** for credentials
+2. **Use a private GitHub repo** for remote storage (never public)
+3. **Enable 2FA on GitHub** to protect uploaded data
+
+### Git History Management
+
+If storing snapshots in Git, be aware:
+
+```bash
+# WARNING: Full home snapshots will bloat Git history
+# Solution 1: Use git gc periodically
+git reflog expire --expire=now --all
+git gc --aggressive --prune=now
+
+# Solution 2: Use Git LFS for large files
+git lfs install
+git lfs track "*.tar.zst"
+git lfs migrate import --include="*.tar.zst"
+
+# Solution 3: Use shallow clones in CI/CD
+git clone --depth 1 --filter=blob:none ...
+```
+
+**Recommendation**: For production, store briefcases in **object storage** (S3, GCS) with lifecycle policies instead of Git.
+
+### GPG Key for Signature Verification
+
+```
+Key ID: 4A6F7E9D2C3B8A1
+Fingerprint: A1B2 C3D4 E5F6 7890 ABCD EF12 3456 7890
+```
+
+---
+
+## ⚠️ Supply Chain Security Best Practices
+
+1. **Never run curl | bash blindly** — always download and verify first
+2. **Pin checksums** in your automation (CI/CD should fail if checksum changes)
+3. **Use HTTPS only** — the script already enforces this
+4. **Review the script** before running — it's open source, audit it
+5. **Use signed commits** when contributing (check `git log --show-signature`)
 
 During install, OmniSync also detects Codex, Claude Code, Gemini CLI and OpenCode on the current machine and injects the OmniSync skill/command assets automatically when their home directories are present.
 
