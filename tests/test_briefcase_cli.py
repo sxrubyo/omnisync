@@ -13,6 +13,57 @@ CLI_PATH = REPO_ROOT / "src" / "omni_core.py"
 
 
 class BriefcaseCliTests(unittest.TestCase):
+    def test_briefcase_full_without_profile_forces_full_home_and_snapshot_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            home_root = tmp_root / "home" / "ubuntu"
+            manifest_path = tmp_root / "config" / "system_manifest.json"
+            omni_home = tmp_root / ".omni"
+            export_dir = omni_home / "exports"
+
+            (home_root / "workspace").mkdir(parents=True)
+            (home_root / "workspace" / "README.md").write_text("omni\n", encoding="utf-8")
+            (home_root / ".ssh").mkdir()
+            (home_root / ".ssh" / "id_ed25519").write_text("PRIVATE\n", encoding="utf-8")
+
+            env = {key: value for key, value in os.environ.items() if not key.startswith("OMNI_")}
+            env["OMNI_HOME"] = str(omni_home)
+            env["OMNI_EXPORT_DIR"] = str(export_dir)
+            env["OMNI_LOG_DIR"] = str(omni_home / "logs")
+            env["OMNI_CONFIG_DIR"] = str(tmp_root / "config")
+            env["HOME_PRIVATE_SNAPSHOT_PASSPHRASE"] = "test-passphrase"
+
+            briefcase = subprocess.run(
+                [
+                    "python3",
+                    str(CLI_PATH),
+                    "briefcase",
+                    "--full",
+                    "--manifest",
+                    str(manifest_path),
+                    "--home-root",
+                    str(home_root),
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(briefcase.returncode, 0, msg=briefcase.stderr or briefcase.stdout)
+            json_exports = list(export_dir.glob("*-briefcase.json"))
+            restore_exports = list(export_dir.glob("*-briefcase.restore.sh"))
+            snapshot_exports = list(export_dir.glob("*-briefcase.home-snapshot"))
+            full_restore_exports = list(export_dir.glob("*-briefcase.full-home.restore.sh"))
+            self.assertEqual(len(json_exports), 1)
+            self.assertEqual(len(restore_exports), 1)
+            self.assertEqual(len(snapshot_exports), 1)
+            self.assertEqual(len(full_restore_exports), 1)
+            payload = json.loads(json_exports[0].read_text(encoding="utf-8"))
+            self.assertEqual(payload["source"]["profile"], "full-home")
+            self.assertTrue((snapshot_exports[0] / "home_private_snapshot" / "inventory" / "archive_manifest.tsv").exists())
+
     def test_briefcase_without_output_writes_default_export_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)

@@ -16,6 +16,7 @@ import argparse
 import subprocess
 import shlex
 import shutil
+import tempfile
 import platform
 import socket
 import textwrap
@@ -29,7 +30,7 @@ from bundle_ops import (
     latest_or_explicit,
     restore_bundle,
 )
-from briefcase_ops import build_briefcase_manifest, build_restore_plan, build_restore_script
+from briefcase_ops import build_briefcase_manifest, build_restore_plan, build_restore_script, manifest_from_briefcase
 from agent_ops import env_has_value, get_provider, load_agent_config, provider_catalog, save_agent_config, upsert_env_value
 from agent_skill_ops import RUNTIMES, detect_agent_runtimes, sync_agent_integrations
 from bridge_ops import (
@@ -91,6 +92,7 @@ from guide_ops import build_guide_entries
 from home_snapshot_ops import (
     apply_downloaded_home_snapshot,
     create_home_snapshot_bundle,
+    create_local_home_snapshot_export,
     download_home_snapshot_bundle,
     upload_home_snapshot_bundle,
 )
@@ -328,7 +330,7 @@ def verbose(msg):
 # BRANDING
 # ══════════════════════════════════════════════════════════════════════════════
 
-OMNI_VERSION = "2.4.1"
+OMNI_VERSION = "2.5.0"
 OMNI_BUILD = "2026.03.portable"
 OMNI_CODENAME = "Titan"
 
@@ -670,28 +672,47 @@ def select_menu(
                 if b == b"\x03":
                     return "\x03"
                 if b == b"\x1b":
-                    ready, _, _ = _sel.select([fd], [], [], 0.05)
-                    if not ready:
+                    seq = b""
+                    for _ in range(2):
+                        ready, _, _ = _sel.select([fd], [], [], 0.5)
+                        if not ready:
+                            break
+                        seq += _os.read(fd, 1)
+                    if seq == b"[A":
+                        return "UP"
+                    if seq == b"[B":
+                        return "DOWN"
+                    if not seq:
                         return "\x1b"
-                    b2 = _os.read(fd, 1)
-                    if b2 == b"[":
-                        ready2, _, _ = _sel.select([fd], [], [], 0.05)
-                        if not ready2:
-                            return "["
-                        b3 = _os.read(fd, 1)
-                        if b3 == b"A":
-                            return "UP"
-                        if b3 == b"B":
-                            return "DOWN"
-                        return b3.decode(errors="ignore")
-                    return b2.decode(errors="ignore")
+                    return seq.decode(errors="ignore")
                 return b.decode(errors="ignore")
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
         draw(first=True)
+        escape_state = ""
         while True:
             key = read_key()
+            if key in ("\x1b[A", "[A"):
+                key = "UP"
+            elif key in ("\x1b[B", "[B"):
+                key = "DOWN"
+
+            if escape_state == "\x1b":
+                if key == "[":
+                    escape_state = "\x1b["
+                    continue
+                escape_state = ""
+            elif escape_state == "\x1b[":
+                if key == "A":
+                    key = "UP"
+                elif key == "B":
+                    key = "DOWN"
+                escape_state = ""
+
+            if key == "\x1b":
+                escape_state = "\x1b"
+                continue
             if key == "\r":
                 if digit_buffer:
                     return max(0, min(int(digit_buffer) - 1, len(options) - 1))
@@ -1446,6 +1467,81 @@ class OmniCore:
         base = EXPORT_DIR / f"{stamp}-{host}-briefcase.json"
         return base, base.with_suffix(".restore.sh")
 
+    def effective_briefcase_profile(self, profile: str = "", *, full: bool = False) -> str:
+        raw = str(profile or "").strip()
+        if full and not raw:
+            return FULL_HOME_PROFILE
+        return raw
+
+    def _build_full_home_restore_wrapper(
+        self,
+        *,
+        briefcase_name: str,
+        restore_script_name: str,
+        snapshot_dir_name: str,
+    ) -> str:
+        return "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                "",
+                'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+                f'BRIEFCASE_PATH="${{OMNI_BRIEFCASE_PATH:-$SCRIPT_DIR/{briefcase_name}}}"',
+                f'RESTORE_SCRIPT="$SCRIPT_DIR/{restore_script_name}"',
+                f'SNAPSHOT_RESTORE="$SCRIPT_DIR/{snapshot_dir_name}/scripts/restore_home_private_snapshot.sh"',
+                "",
+                'if [[ ! -f "$RESTORE_SCRIPT" ]]; then',
+                '  echo "Missing restore script: $RESTORE_SCRIPT" >&2',
+                "  exit 1",
+                "fi",
+                'if [[ ! -f "$SNAPSHOT_RESTORE" ]]; then',
+                '  echo "Missing home snapshot restore script: $SNAPSHOT_RESTORE" >&2',
+                "  exit 1",
+                "fi",
+                "",
+                'OMNI_BRIEFCASE_PATH="$BRIEFCASE_PATH" bash "$RESTORE_SCRIPT"',
+                'bash "$SNAPSHOT_RESTORE" "${1:-$HOME}"',
+                'echo "Full home restore finished."',
+                "",
+            ]
+        )
+
+    def create_full_home_artifacts(
+        self,
+        *,
+        briefcase_path: Path,
+        restore_script_path: Path,
+        home_root: str,
+    ) -> Dict[str, Path]:
+        now_utc = datetime.now(timezone.utc)
+        stamp = now_utc.strftime("%Y%m%d-%H%M%S")
+        host = socket.gethostname().split(".", 1)[0] or "host"
+        snapshot_root = briefcase_path.with_name(f"{briefcase_path.stem}.home-snapshot")
+        export = create_local_home_snapshot_export(
+            APP_DIR,
+            export_root=snapshot_root,
+            home_root=home_root,
+            snapshot_id=f"{stamp}-{host}",
+            host=host,
+            stamp=now_utc.isoformat().replace("+00:00", "Z"),
+            mode="private",
+        )
+        restore_wrapper = briefcase_path.with_name(f"{briefcase_path.stem}.full-home.restore.sh")
+        restore_wrapper.write_text(
+            self._build_full_home_restore_wrapper(
+                briefcase_name=briefcase_path.name,
+                restore_script_name=restore_script_path.name,
+                snapshot_dir_name=snapshot_root.name,
+            ),
+            encoding="utf-8",
+        )
+        restore_wrapper.chmod(0o755)
+        return {
+            "snapshot_root": Path(export["root"]),
+            "snapshot_manifest": Path(export["manifest_path"]),
+            "restore_wrapper": restore_wrapper,
+        }
+
     def load_repo_entries(self) -> List[Any]:
         defaults = [
             str((Path.home() / "melissa").resolve()),
@@ -1787,6 +1883,7 @@ class OmniCore:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 bundle_excludes = [
                     "backups/auto-bundles",
+                    "omni-core/backups/auto-bundles",
                     f"{Path(self.root_dir).name}/backups/auto-bundles",
                     str(Path(self.root_dir) / "backups" / "auto-bundles"),
                 ]
@@ -2988,19 +3085,34 @@ class OmniCore:
             "restore_script": build_restore_script(briefcase, fresh_server=True),
         }
 
+    def reconcile_from_briefcase_payload(self, briefcase_data: Dict[str, Any], *, work_dir: Path) -> Dict[str, Any] | None:
+        derived_manifest = manifest_from_briefcase(briefcase_data, home_root=str(Path.home()))
+        manifest_path = work_dir / "downloaded-briefcase.manifest.json"
+        manifest_path.write_text(json.dumps(derived_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return self.restore_host_cmd(
+            manifest_path=str(manifest_path),
+            home_root=str(Path.home()),
+            accept_all=True,
+            profile=str(derived_manifest.get("profile") or FULL_HOME_PROFILE),
+            show_summary=False,
+            auto_backup=False,
+            allow_missing_bundles=True,
+            recover_apps_ips=True,
+        )
+
     def _briefcase_step(self, title: str, detail: str) -> None:
         bullet(title, C.GRN, bold=True)
         dim(detail)
 
     def _offer_github_briefcase_sync(self, briefcase_path: Path, *, profile: str = "") -> None:
+        if not self.is_interactive():
+            hint(self.t("Si quieres subir esta maleta a GitHub privado, ejecuta `omni push --profile full-home`.", "If you want to upload this briefcase to a private GitHub repo, run `omni push --profile full-home`."))
+            return
         config = self.global_config()
         github_cfg = config.get("github") or {}
         token = str(github_cfg.get("token") or "").strip() or gh_cli_token()
         if not token:
             hint(self.t("GitHub no está autenticado todavía. Haz `gh auth login` o `omni auth github` cuando quieras sincronizar la maleta a un repo privado.", "GitHub is not authenticated yet. Run `gh auth login` or `omni auth github` when you want to sync the briefcase to a private repo."))
-            return
-        if not self.is_interactive():
-            hint(self.t("GitHub listo. Ejecuta `omni push --profile full-home` para subir la maleta y el snapshot privado del home a un repo privado.", "GitHub is ready. Run `omni push --profile full-home` to upload the briefcase and private home snapshot to a private repo."))
             return
         if not self.confirm_step(self.t("¿Quieres crear o reutilizar un repo privado de GitHub y subir esta maleta ahora?", "Do you want to create or reuse a private GitHub repo and upload this briefcase now?"), default=False):
             return
@@ -3182,7 +3294,15 @@ class OmniCore:
         except Exception as err:
             render_human_error(f"Error subiendo a GitHub: {err}", suggestion="Revisa tu conexión y token de GitHub.")
 
-    def _show_remote_recovery_instructions(self, target: SSHDestination, remote: Dict[str, Any], remote_path: str, github_authenticated: bool) -> None:
+    def _show_remote_recovery_instructions(
+        self,
+        target: SSHDestination,
+        remote: Dict[str, Any],
+        remote_path: str,
+        github_authenticated: bool,
+        *,
+        full_home_restore_hint: str = "",
+    ) -> None:
         section("Instrucciones de recuperación en el host destino")
         
         ssh_command = f"ssh {target.user}@{target.host}"
@@ -3216,14 +3336,19 @@ class OmniCore:
         nl()
         if is_fresh:
             print("  4a. Este es un servidor limpio. Ejecuta:")
-            if is_windows:
+            if full_home_restore_hint:
+                print(f"     {C.CYN}bash {full_home_restore_hint}{C.R}")
+            elif is_windows:
                 print(f"     {C.CYN}omni restore --manifest {remote_path}/manifest.json{C.R}")
             else:
                 print(f"     {C.CYN}omni guide{C.R}")
         else:
             print("  4b. Este host ya tiene archivos. Ejecuta:")
-            print(f"     {C.CYN}omni connect --restore --path {remote_path}{C.R}")
-        
+            if full_home_restore_hint:
+                print(f"     {C.CYN}bash {full_home_restore_hint}{C.R}")
+            else:
+                print(f"     {C.CYN}omni restore --profile full-home{C.R}")
+
         if github_authenticated:
             gh_config = self.load_global_config().get("github") or {}
             gh_owner = str(gh_config.get("owner") or "").strip()
@@ -3356,6 +3481,22 @@ class OmniCore:
                 (snapshot_result.stdout or "Snapshot restaurado.").strip().splitlines()[:8],
                 accent=C.GRN,
             )
+        reconcile_result = self.reconcile_from_briefcase_payload(briefcase_data, work_dir=download_dir)
+        if not reconcile_result or not reconcile_result.get("success"):
+            render_human_error(
+                "El reconcile final del host no terminó correctamente después del restore desde GitHub.",
+                suggestion="Revisa la salida anterior y vuelve a ejecutar `omni restore --profile full-home` si hace falta.",
+            )
+            raise SystemExit(1)
+        render_action_summary(
+            "Reconcile aplicado",
+            [
+                f"Bootstrap only: {reconcile_result.get('bootstrap_only', False)}",
+                f"Bundles usados: {reconcile_result.get('used_bundles', False)}",
+                "Compose, PM2 y repos quedaron rehidratados desde el payload restaurado.",
+            ],
+            accent=C.GRN,
+        )
         raise SystemExit(0)
 
     def gh_init_remote_cmd(self, *, repo_slug: str = "") -> None:
@@ -3456,6 +3597,7 @@ class OmniCore:
                     host=host,
                     stamp=created_at,
                     mode="private",
+                    include_passphrase=False,
                 )
                 upload_result = upload_home_snapshot_bundle(target, token=token, bundle=snapshot_bundle, app_dir=APP_DIR)
                 snapshot_manifest_path = str(upload_result.get("manifest_path") or snapshot_manifest_path)
@@ -3533,6 +3675,7 @@ class OmniCore:
             return
 
         if apply_restore and restore_entry and not self.is_dry_run():
+            briefcase_data = json.loads(briefcase_text or "{}")
             result = subprocess.run(["bash", str(restore_path)], capture_output=True, text=True, check=False)
             if result.returncode != 0:
                 render_human_error(
@@ -3558,6 +3701,22 @@ class OmniCore:
                     (snapshot_result.stdout or "Snapshot restaurado.").strip().splitlines()[:8],
                     accent=C.GRN,
                 )
+            reconcile_result = self.reconcile_from_briefcase_payload(briefcase_data, work_dir=download_dir)
+            if not reconcile_result or not reconcile_result.get("success"):
+                render_human_error(
+                    "El reconcile final del host no terminó correctamente después del restore desde GitHub.",
+                    suggestion="Revisa la salida anterior y vuelve a ejecutar `omni restore --profile full-home` si hace falta.",
+                )
+                return
+            render_action_summary(
+                "Reconcile aplicado",
+                [
+                    f"Bootstrap only: {reconcile_result.get('bootstrap_only', False)}",
+                    f"Bundles usados: {reconcile_result.get('used_bundles', False)}",
+                    "Compose, PM2 y repos quedaron rehidratados desde el payload restaurado.",
+                ],
+                accent=C.GRN,
+            )
 
     def show_help(self):
         """Show help menu."""
@@ -4492,14 +4651,33 @@ class OmniCore:
             context={"remote": remote},
         )
 
+        info(self.t("Paso 2/3 · Generando la maleta y el restore script para el destino.", "Step 2/3 · Building the briefcase and restore script for the target."))
+        temp_dir = Path(tempfile.mkdtemp(prefix="omni-connect-"))
         sources: List[str] = []
+        full_home_artifacts: Dict[str, Path] = {}
+        effective_home_root = home_root or str(Path.home())
+        requested_profile = self.effective_briefcase_profile(profile, full=not bool(briefcase_path))
+
         if briefcase_path:
-            sources.append(str(Path(briefcase_path).expanduser()))
+            source_briefcase_path = Path(briefcase_path).expanduser().resolve()
+            briefcase = json.loads(source_briefcase_path.read_text(encoding="utf-8"))
+            generated = temp_dir / source_briefcase_path.name
+            shutil.copy2(source_briefcase_path, generated)
+            restore_script = temp_dir / (source_briefcase_path.stem + ".restore.sh")
+            source_restore = source_briefcase_path.with_suffix(".restore.sh")
+            if source_restore.exists():
+                shutil.copy2(source_restore, restore_script)
+                restore_script.chmod(0o755)
+            else:
+                restore_script.write_text(build_restore_script(briefcase, fresh_server=bool(remote.get("fresh_server"))), encoding="utf-8")
+                restore_script.chmod(0o755)
+            effective_home_root = home_root or briefcase.get("source", {}).get("host_root") or str(Path.home())
+            requested_profile = str(briefcase.get("source", {}).get("profile") or requested_profile)
+            selected_path = source_briefcase_path
         else:
-            info(self.t("Paso 2/3 · Generando la maleta y el restore script para el destino.", "Step 2/3 · Building the briefcase and restore script for the target."))
-            selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile or FULL_HOME_PROFILE)
-            report = scan_home(home_root or manifest.get("host_root") or str(Path.home()), manifest)
+            selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=requested_profile or FULL_HOME_PROFILE)
             effective_home_root = home_root or manifest.get("host_root") or str(Path.home())
+            report = scan_home(effective_home_root, manifest)
             full_inventory = collect_full_inventory(home_root=effective_home_root)
             briefcase = build_briefcase_manifest(
                 manifest,
@@ -4507,15 +4685,24 @@ class OmniCore:
                 inventory_report=report,
                 full_inventory=full_inventory,
             )
-            temp_dir = Path(tempfile.mkdtemp(prefix="omni-connect-"))
             generated = temp_dir / "briefcase.json"
             generated.write_text(json.dumps(briefcase, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            sources.append(str(generated))
             restore_script = temp_dir / "briefcase.restore.sh"
             restore_script.write_text(build_restore_script(briefcase, fresh_server=bool(remote.get("fresh_server"))), encoding="utf-8")
             restore_script.chmod(0o755)
-            sources.append(str(restore_script))
             dim(f"Briefcase generado desde {selected_path}")
+
+        sources.append(str(generated))
+        sources.append(str(restore_script))
+        resolved_profile = str(briefcase.get("source", {}).get("profile") or requested_profile or "").strip().lower().replace("_", "-")
+        if resolved_profile == FULL_HOME_PROFILE:
+            full_home_artifacts = self.create_full_home_artifacts(
+                briefcase_path=generated,
+                restore_script_path=restore_script,
+                home_root=effective_home_root,
+            )
+            sources.append(str(full_home_artifacts["snapshot_root"]))
+            sources.append(str(full_home_artifacts["restore_wrapper"]))
 
         latest_state = latest_or_explicit(self.bundle_dir, "", "state_bundle")
         latest_secrets = latest_or_explicit(self.bundle_dir, "", "secrets_bundle")
@@ -4576,31 +4763,52 @@ class OmniCore:
             accent=C.GRN,
         )
 
-        nl()
-        section("Opciones post-transferencia")
-        
-        next_options = []
-        if github_authenticated:
-            next_options.append(self.t("Subir maleta a GitHub (para recovery en otro host)", "Upload migration package to GitHub (for recovery on another host)"))
-        next_options.append(self.t("Solo mostrar comandos de recuperación remota", "Show remote recovery commands only"))
-        
-        selected_next = select_menu(
-            [opt for opt in next_options],
-            title=self.t("¿Qué quieres hacer ahora?", "What do you want to do now?"),
-            descriptions=[
-                self.t("Sube briefcase, restore script y bundles locales a GitHub privado para tener recovery desde otro host.", "Uploads the briefcase, restore script and local bundles to private GitHub so you can recover them from another host."),
-                self.t("Muestra los comandos para instalar Omni en el servidor destino y continuar la migración.", "Shows commands to install Omni on the destination server and continue migration."),
-            ],
-            icons=["☁️", "📋"],
-            default=0 if github_authenticated else 1,
-            show_index=True,
-            footer=self.t("↑/↓ elegir · Enter confirmar", "↑/↓ choose · Enter confirm"),
+        if _is_tty():
+            nl()
+            section("Opciones post-transferencia")
+
+            next_options = []
+            if github_authenticated:
+                next_options.append(self.t("Subir maleta a GitHub (para recovery en otro host)", "Upload migration package to GitHub (for recovery on another host)"))
+            next_options.append(self.t("Solo mostrar comandos de recuperación remota", "Show remote recovery commands only"))
+
+            selected_next = select_menu(
+                [opt for opt in next_options],
+                title=self.t("¿Qué quieres hacer ahora?", "What do you want to do now?"),
+                descriptions=[
+                    self.t("Sube briefcase, restore script y bundles locales a GitHub privado para tener recovery desde otro host.", "Uploads the briefcase, restore script and local bundles to private GitHub so you can recover them from another host."),
+                    self.t("Muestra los comandos para instalar Omni en el servidor destino y continuar la migración.", "Shows commands to install Omni on the destination server and continue migration."),
+                ],
+                icons=["☁️", "📋"],
+                default=0 if github_authenticated else 1,
+                show_index=True,
+                footer=self.t("↑/↓ elegir · Enter confirmar", "↑/↓ choose · Enter confirm"),
+            )
+
+            if selected_next == 0 and github_authenticated:
+                self.push_cmd(
+                    briefcase_path=str(generated),
+                    home_root=effective_home_root,
+                    profile=resolved_profile,
+                )
+        elif github_authenticated:
+            hint(
+                self.t(
+                    "Si también quieres recovery por GitHub, ejecuta `omni push --profile full-home` cuando termine esta transferencia.",
+                    "If you also want GitHub recovery, run `omni push --profile full-home` after this transfer finishes.",
+                )
+            )
+
+        full_home_restore_hint = ""
+        if full_home_artifacts:
+            full_home_restore_hint = f"{remote_path or '~/omni-transfer'}/{full_home_artifacts['restore_wrapper'].name}"
+        self._show_remote_recovery_instructions(
+            target,
+            remote,
+            remote_path or "~/omni-transfer",
+            github_authenticated,
+            full_home_restore_hint=full_home_restore_hint,
         )
-        
-        if selected_next == 0 and github_authenticated:
-            self._push_briefcase_to_github(sources, remote.get("fresh_server", False))
-        
-        self._show_remote_recovery_instructions(target, remote, remote_path or "~/omni-transfer", github_authenticated)
 
     def show_doctor(self):
         print_logo(compact=True)
@@ -5301,9 +5509,10 @@ class OmniCore:
     ):
         print_logo(compact=True)
         section(self.t("Maleta portable", "Portable briefcase"))
+        requested_profile = self.effective_briefcase_profile(profile, full=full)
 
         with Spinner(self.t("Leyendo manifest y perfil activo...", "Reading manifest and active profile..."), color=C.PRIMARY) as spinner:
-            selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=profile)
+            selected_path, manifest = self.resolve_manifest(manifest_path, home_root, create=True, profile=requested_profile)
             effective_home_root = home_root or manifest.get("host_root") or str(Path.home())
             spinner.finish(self.t("Manifest resuelto", "Manifest resolved"), success=True)
 
@@ -5349,6 +5558,8 @@ class OmniCore:
             self.t("4. Escribiendo artefactos", "4. Writing artifacts"),
             self.t(f"Salida: {resolved_output}", f"Output: {resolved_output}"),
         )
+        snapshot_artifacts: Dict[str, Path] = {}
+        resolved_profile = str(briefcase["source"]["profile"] or "").strip().lower().replace("_", "-")
         if self.is_dry_run():
             warn(self.t("Dry run activo: no se escribieron archivos.", "Dry run active: no files were written."))
         else:
@@ -5359,6 +5570,14 @@ class OmniCore:
             restore_path.chmod(0o755)
             ok(self.t(f"Maleta guardada en {resolved_output}", f"Briefcase saved to {resolved_output}"))
             ok(self.t(f"Restore script guardado en {restore_path}", f"Restore script saved to {restore_path}"))
+            if resolved_profile == FULL_HOME_PROFILE:
+                snapshot_artifacts = self.create_full_home_artifacts(
+                    briefcase_path=resolved_output,
+                    restore_script_path=restore_path,
+                    home_root=effective_home_root,
+                )
+                ok(self.t(f"Snapshot completo del home en {snapshot_artifacts['snapshot_root']}", f"Full home snapshot saved to {snapshot_artifacts['snapshot_root']}"))
+                ok(self.t(f"Restore completo en {snapshot_artifacts['restore_wrapper']}", f"Full restore launcher saved to {snapshot_artifacts['restore_wrapper']}"))
 
         kv("Manifest", str(selected_path))
         kv(self.t("Perfil", "Profile"), str(briefcase["source"]["profile"]), color=C.GRN)
@@ -5376,12 +5595,20 @@ class OmniCore:
             kv(self.t("Extensiones VS Code", "VS Code Ext"), str(counts.get("vscode_extensions", 0)), color=C.GRN)
         kv(self.t("Archivo de maleta", "Briefcase File"), str(resolved_output), color=C.GRN)
         kv(self.t("Restore script", "Restore Script"), str(restore_path), color=C.GRN)
+        if snapshot_artifacts:
+            kv(self.t("Snapshot del home", "Home Snapshot"), str(snapshot_artifacts["snapshot_root"]), color=C.GRN)
+            kv(self.t("Restore exacto", "Exact Restore"), str(snapshot_artifacts["restore_wrapper"]), color=C.GRN)
         nl()
-        hint(self.t("GitHub queda como metadata/control plane. El payload real debe viajar por SSH/SFTP/rsync.", "GitHub stays as metadata/control plane. The real payload should move over SSH/SFTP/rsync."))
-        bullet(self.t("Siguiente paso: usa `omni connect` para mover la maleta al destino.", "Next: use `omni connect` to move the briefcase to the target host."), C.GRN)
-        bullet(self.t("En el destino: ejecuta `omni restore` o `omni migrate sync restore`.", "On the target: run `omni restore` or `omni migrate sync restore`."), C.GRN)
+        if resolved_profile == FULL_HOME_PROFILE:
+            hint(self.t("Esta exportación ya incluye el snapshot completo del home junto con el contrato portable.", "This export already includes the full home snapshot alongside the portable contract."))
+            bullet(self.t("Siguiente paso: usa `omni connect` o `omni push --profile full-home` para mover TODO el payload.", "Next: use `omni connect` or `omni push --profile full-home` to move the complete payload."), C.GRN)
+            bullet(self.t("En el destino: ejecuta el launcher `*.full-home.restore.sh` o `omni gh restore`.", "On the target: run the `*.full-home.restore.sh` launcher or `omni gh restore`."), C.GRN)
+        else:
+            hint(self.t("La maleta es contrato portable + restore script; el payload real sigue viajando por SSH/SFTP/rsync.", "The briefcase is portable metadata plus a restore script; the real payload still moves over SSH/SFTP/rsync."))
+            bullet(self.t("Siguiente paso: usa `omni connect` para mover la maleta al destino.", "Next: use `omni connect` to move the briefcase to the target host."), C.GRN)
+            bullet(self.t("En el destino: ejecuta `omni restore` o `omni migrate sync restore`.", "On the target: run `omni restore` or `omni migrate sync restore`."), C.GRN)
         if not self.is_dry_run():
-            self._offer_github_briefcase_sync(resolved_output, profile=profile)
+            self._offer_github_briefcase_sync(resolved_output, profile=requested_profile)
 
     def show_restore_plan(
         self,

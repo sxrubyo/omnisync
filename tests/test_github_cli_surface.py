@@ -148,6 +148,65 @@ class GitHubCliSurfaceTests(unittest.TestCase):
             self.assertTrue((output_dir / "20260421-120000-host.restore.sh").exists())
             snapshot_mock.assert_called_once()
 
+    def test_pull_cmd_apply_restore_runs_reconcile_after_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            global_config = tmp_root / ".omni" / "config.json"
+            global_config.parent.mkdir(parents=True, exist_ok=True)
+            global_config.write_text(
+                json.dumps({"github": {"owner": "sxrubyo", "repo": "omni-private", "token": "gho_test"}}),
+                encoding="utf-8",
+            )
+            output_dir = tmp_root / "imports"
+
+            entries = [
+                {"name": "20260421-120000-host.json", "path": "briefcases/20260421-120000-host.json"},
+                {"name": "20260421-120000-host.restore.sh", "path": "briefcases/20260421-120000-host.restore.sh"},
+            ]
+
+            def fake_download(_target, path, *, token):
+                if path.endswith(".restore.sh"):
+                    return "#!/usr/bin/env bash\necho restore\n"
+                return '{"kind":"omni-briefcase","source":{"profile":"full-home"}}\n'
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(omni_core, "GLOBAL_CONFIG_FILE", global_config))
+                stack.enter_context(mock.patch.object(omni_core.Path, "home", return_value=tmp_root))
+                stack.enter_context(mock.patch("omni_core.list_directory", return_value=entries))
+                stack.enter_context(mock.patch("omni_core.download_text", side_effect=fake_download))
+                stack.enter_context(
+                    mock.patch(
+                        "omni_core.download_home_snapshot_bundle",
+                        return_value={"root": output_dir / "home-snapshot", "manifest": {"snapshot_id": "snap-1"}},
+                    )
+                )
+                stack.enter_context(
+                    mock.patch(
+                        "omni_core.apply_downloaded_home_snapshot",
+                        return_value=subprocess.CompletedProcess(args=["bash"], returncode=0, stdout="Private snapshot restored\n", stderr=""),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch(
+                        "omni_core.subprocess.run",
+                        return_value=subprocess.CompletedProcess(args=["bash"], returncode=0, stdout="restore ok\n", stderr=""),
+                    )
+                )
+                reconcile_mock = stack.enter_context(
+                    mock.patch.object(
+                        omni_core.OmniCore,
+                        "reconcile_from_briefcase_payload",
+                        return_value={"success": True, "bootstrap_only": True, "used_bundles": False},
+                    )
+                )
+                stack.enter_context(mock.patch("omni_core.print_logo"))
+                stack.enter_context(mock.patch("omni_core.section"))
+                stack.enter_context(mock.patch("omni_core.render_action_summary"))
+                core = omni_core.OmniCore()
+                core.pull_cmd(output=str(output_dir), apply_restore=True)
+
+            reconcile_mock.assert_called_once()
+
     def test_gh_restore_cmd_applies_home_snapshot_after_briefcase_restore(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
@@ -181,6 +240,13 @@ class GitHubCliSurfaceTests(unittest.TestCase):
                         return_value={"root": tmp_root / ".omni" / "downloads" / "home-snapshot", "manifest": {"snapshot_id": "snap-1"}},
                     )
                 )
+                reconcile_mock = stack.enter_context(
+                    mock.patch.object(
+                        omni_core.OmniCore,
+                        "reconcile_from_briefcase_payload",
+                        return_value={"success": True, "bootstrap_only": True, "used_bundles": False},
+                    )
+                )
                 apply_snapshot_mock = stack.enter_context(
                     mock.patch(
                         "omni_core.apply_downloaded_home_snapshot",
@@ -200,6 +266,7 @@ class GitHubCliSurfaceTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 0)
             run_mock.assert_called_once()
             apply_snapshot_mock.assert_called_once()
+            reconcile_mock.assert_called_once()
 
     def test_continue_cmd_replays_saved_connect_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

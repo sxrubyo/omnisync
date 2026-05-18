@@ -53,6 +53,7 @@ def create_home_snapshot_bundle(
     host: str,
     stamp: str,
     mode: str = "private",
+    include_passphrase: bool = True,
 ) -> Dict[str, Any]:
     script = app_dir / "scripts" / "refresh_home_snapshot.sh"
     if not script.exists():
@@ -70,11 +71,14 @@ def create_home_snapshot_bundle(
     if mode == "private":
         files.extend(_collect_tree_files(app_dir / "home_private_snapshot", app_dir=app_dir))
 
-    for candidate in (
+    explicit_candidates = [
         app_dir / "scripts" / "restore_home_private_snapshot.sh",
         app_dir / "scripts" / "refresh_home_snapshot.sh",
-        app_dir / "backups" / "home_private_snapshot.passphrase",
-    ):
+    ]
+    if include_passphrase:
+        explicit_candidates.append(app_dir / "backups" / "home_private_snapshot.passphrase")
+
+    for candidate in explicit_candidates:
         entry = _collect_explicit_file(candidate, app_dir=app_dir)
         if entry:
             files.append(entry)
@@ -96,6 +100,64 @@ def create_home_snapshot_bundle(
         "manifest_path": f"{root_prefix}.manifest.json",
         "root_prefix": root_prefix,
     }
+
+
+def materialize_home_snapshot_bundle(
+    bundle: Dict[str, Any],
+    *,
+    app_dir: Path,
+    destination_root: Path,
+) -> Dict[str, Any]:
+    manifest = bundle["manifest"]
+    root = destination_root.expanduser().resolve()
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    manifest_local = root / "snapshot.manifest.json"
+    manifest_local.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    for entry in manifest.get("files", []):
+        rel_path = str(entry.get("relative_path") or "").strip()
+        if not rel_path:
+            continue
+        source = app_dir / rel_path
+        if not source.exists():
+            continue
+        destination = root / rel_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        if entry.get("executable"):
+            destination.chmod(0o755)
+
+    return {
+        "manifest": manifest,
+        "root": root,
+        "manifest_path": manifest_local,
+    }
+
+
+def create_local_home_snapshot_export(
+    app_dir: Path,
+    *,
+    export_root: Path,
+    home_root: str,
+    snapshot_id: str,
+    host: str,
+    stamp: str,
+    mode: str = "private",
+    include_passphrase: bool = True,
+) -> Dict[str, Any]:
+    bundle = create_home_snapshot_bundle(
+        app_dir,
+        home_root=home_root,
+        snapshot_id=snapshot_id,
+        host=host,
+        stamp=stamp,
+        mode=mode,
+        include_passphrase=include_passphrase,
+    )
+    return materialize_home_snapshot_bundle(bundle, app_dir=app_dir, destination_root=export_root)
 
 
 def _run_git(args: List[str], *, token: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:

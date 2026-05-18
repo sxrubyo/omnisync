@@ -17,6 +17,8 @@ PRIVATE_CHUNK_SIZE="${HOME_PRIVATE_SNAPSHOT_CHUNK_SIZE:-40m}"
 
 ALLOWLIST_DIRS=(
   ".agents"
+  ".aws"
+  ".bun"
   ".codex"
   ".nova"
   "Openclaw"
@@ -24,10 +26,13 @@ ALLOWLIST_DIRS=(
   "eco-nova"
   "melissa"
   "melissa-instances"
+  "n8n-workflows"
+  "nova"
   "nova-cli"
   "nova-os"
   "nova-test"
   "openclaw-official"
+  "omnisync"
   "tv-bridge"
   "whatsapp-bridge"
   "xus-core"
@@ -100,6 +105,8 @@ TOP_LEVEL_OMIT_REASONS=(
 
 RSYNC_EXCLUDES=(
   "--exclude=.git/"
+  "--exclude=home_snapshot/"
+  "--exclude=home_private_snapshot/"
   "--exclude=node_modules/"
   "--exclude=.venv/"
   "--exclude=venv/"
@@ -157,42 +164,26 @@ PRIVATE_ARCHIVE_TARGETS=(
 )
 
 PRIVATE_OMIT_REASONS=(
-  ".ssh:never-commit-ssh-material"
-  ".git-credentials:never-commit-credentials"
-  ".env.nova:never-commit-env"
-  ".appium.env:never-commit-env"
-  ".npmrc:may-contain-token"
-  "melissa-backups:historical-backups-too-large"
-  "omni-core:git-repo-restored-separately"
-  "node_modules:dependency-cache"
   ".cache:cache"
   ".npm:cache"
-  ".npm-global:global-packages"
   "android-sdk:tool-cache"
   "go:tool-cache"
-  "opencode_env:venv"
   "backups-test:backup"
+  "data-test:test-runtime-state"
+  "output:build-output"
+  "tmp:temp-file"
 )
 
 PRIVATE_TAR_EXCLUDES=(
-  "--exclude=.git"
-  "--exclude=node_modules"
-  "--exclude=.venv"
-  "--exclude=venv"
+  "--exclude=omnisync/home_snapshot"
+  "--exclude=omnisync/home_private_snapshot"
+  "--exclude=omnisync/imports"
+  "--exclude=omnisync/exports"
+  "--exclude=omnisync/logs"
   "--exclude=__pycache__"
   "--exclude=.pytest_cache"
   "--exclude=.cache"
   "--exclude=.npm"
-  "--exclude=.npm-global"
-  "--exclude=.ssh"
-  "--exclude=.git-credentials"
-  "--exclude=.env"
-  "--exclude=.env.*"
-  "--exclude=*.env"
-  "--exclude=.npmrc"
-  "--exclude=melissa-backups"
-  "--exclude=backups"
-  "--exclude=backup*"
   "--exclude=.codex/vendor"
   "--exclude=.codex/cache"
   "--exclude=.codex/.tmp"
@@ -381,6 +372,7 @@ write_private_inventory() {
   for item in "${PRIVATE_OMIT_REASONS[@]}"; do
     printf '%s\t%s\n' "${item%%:*}" "${item#*:}" >> "$PRIVATE_INVENTORY_DIR/omitted_targets.tsv"
   done
+  : > "$PRIVATE_INVENTORY_DIR/included_targets.txt"
 
   cat > "$PRIVATE_INVENTORY_DIR/README.txt" <<EOF
 Private encrypted overlay generated from: $HOME_ROOT
@@ -391,6 +383,20 @@ Archives live in:
 Restore with:
   ./scripts/restore_home_private_snapshot.sh /home/ubuntu
 EOF
+}
+
+private_target_is_omitted() {
+  local name="$1"
+  for item in "${PRIVATE_OMIT_REASONS[@]}"; do
+    if [[ "${item%%:*}" == "$name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+list_home_top_level_entries() {
+  find "$HOME_ROOT" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
 }
 
 archive_target() {
@@ -462,9 +468,14 @@ refresh_private_snapshot() {
   : > "$PRIVATE_INVENTORY_DIR/archive_manifest.tsv"
   write_private_inventory
 
-  for name in "${PRIVATE_ARCHIVE_TARGETS[@]}"; do
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if private_target_is_omitted "$name"; then
+      continue
+    fi
+    printf '%s\n' "$name" >> "$PRIVATE_INVENTORY_DIR/included_targets.txt"
     archive_target "$name" "$passphrase_file"
-  done
+  done < <(list_home_top_level_entries)
 
   find "$PRIVATE_ARCHIVE_DIR" -type f | sed "s#^$PRIVATE_SNAPSHOT_ROOT/##" | sort > "$PRIVATE_INVENTORY_DIR/archive_files.txt"
   du -sh "$PRIVATE_ARCHIVE_DIR" > "$PRIVATE_INVENTORY_DIR/archive_size.txt" || true

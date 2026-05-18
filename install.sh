@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPECTED_SHA256="4af10c6f26e91f7647c673e0c75d08c2ee4b1f9908513c7fbfe1d269710bcfc1"
+EXPECTED_SHA256="f2bce200ba2feec844f79c44590c866915dd4f31852b5ba0f2370256efad0a55"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/sxrubyo/omnisync/main/install.sh"
 
 verify_script_integrity() {
@@ -184,8 +184,27 @@ bootstrap_runtime() {
   fi
   confirm_runtime_dependencies
   say "Installing Python packages..."
-  "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check --upgrade pip >/dev/null 2>&1 && ok "pip updated" || fail "pip failed"
-  "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check rich tqdm prompt_toolkit paramiko >/dev/null 2>&1 && ok "Packages installed" || fail "Packages failed"
+  "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check --upgrade pip >/dev/null 2>&1 && ok "pip updated" || info "[warn] pip upgrade skipped"
+  if "$RUNTIME_DIR/bin/pip" install --disable-pip-version-check rich tqdm prompt_toolkit paramiko >/dev/null 2>&1; then
+    ok "Packages installed"
+    return
+  fi
+  info "[warn] Optional runtime packages could not be installed. Validating core CLI..."
+  if env -u PYTHONPATH -u PYTHONHOME OMNI_HOME="$OMNI_HOME" PYTHONNOUSERSITE=1 "$RUNTIME_DIR/bin/python" - <<'PY' >/dev/null 2>&1
+import os
+import sys
+from pathlib import Path
+
+omni_home = Path(os.environ["OMNI_HOME"])
+sys.path.insert(0, str(omni_home / "src"))
+import omni_core  # noqa: F401
+PY
+  then
+    ok "Core runtime ready (without optional packages)"
+    info "  Some advanced flows may need a later `pip install rich tqdm prompt_toolkit paramiko`."
+  else
+    info "[warn] Core smoke import failed under the current environment. Continuing to final CLI validation..."
+  fi
 }
 
 write_wrapper() {

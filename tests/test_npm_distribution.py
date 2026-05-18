@@ -24,11 +24,14 @@ class NpmDistributionTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("npm"), "npm is required")
     def test_npm_pack_dry_run_succeeds(self) -> None:
+        npm_cache = REPO_ROOT / ".tmp" / "npm-cache"
+        npm_cache.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             ["npm", "pack", "--dry-run", "--json"],
             cwd=REPO_ROOT,
             text=True,
             capture_output=True,
+            env={**os.environ, "npm_config_cache": str(npm_cache)},
             check=False,
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)

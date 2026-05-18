@@ -294,6 +294,29 @@ def build_restore_plan(
     }
 
 
+def manifest_from_briefcase(
+    briefcase_manifest: Mapping[str, Any],
+    *,
+    home_root: str,
+) -> dict[str, Any]:
+    source = dict(briefcase_manifest.get("source", {}))
+    inventory = dict(briefcase_manifest.get("inventory", {}))
+    packages = dict(inventory.get("packages", {}))
+    return {
+        "version": 1,
+        "profile": str(source.get("profile") or "production-clean"),
+        "host_root": str(home_root),
+        "state_paths": list(inventory.get("state_paths", [])),
+        "secret_paths": list(inventory.get("secret_paths", [])),
+        "install_targets": list(inventory.get("install_targets", [])),
+        "pm2_ecosystems": list(inventory.get("pm2_ecosystems", [])),
+        "compose_projects": list(inventory.get("compose_projects", [])),
+        "apt_packages": list(packages.get("system", [])),
+        "python_packages": list(packages.get("python", [])),
+        "npm_global_packages": list(packages.get("node_global", [])),
+    }
+
+
 def _shell_lines(command: str, values: list[str], *, indent: str = "  ") -> list[str]:
     if not values:
         return []

@@ -37,8 +37,12 @@ class HomeSnapshotScriptTests(unittest.TestCase):
         (self.home_root / ".git-credentials").write_text("https://token@example.invalid\n")
         (self.home_root / ".ssh").mkdir()
         (self.home_root / ".ssh" / "id_ed25519").write_text("PRIVATE KEY\n")
+        (self.home_root / ".omni").mkdir()
+        (self.home_root / ".omni" / "config.json").write_text('{"repo":"private"}\n')
         (self.home_root / "nova-os").mkdir()
         (self.home_root / "nova-os" / "README.md").write_text("nova-os project\n")
+        (self.home_root / "omnisync" / ".git").mkdir(parents=True)
+        (self.home_root / "omnisync" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
         (self.home_root / "AGENTS.md").write_text("agents\n")
 
         self.env = os.environ.copy()
@@ -79,6 +83,9 @@ class HomeSnapshotScriptTests(unittest.TestCase):
         manifest_text = manifest.read_text()
         self.assertIn(".n8n", manifest_text)
         self.assertIn(".pm2", manifest_text)
+        self.assertIn(".ssh", manifest_text)
+        self.assertIn(".omni", manifest_text)
+        self.assertIn("omnisync", manifest_text)
 
         encrypted_chunks = sorted((private_root / "archives").glob("dot_n8n.tar.gz.enc.part-*"))
         self.assertTrue(encrypted_chunks)
@@ -115,6 +122,18 @@ class HomeSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(
             (restore_target / ".pm2" / "logs" / "nova.log").read_text(),
             (self.home_root / ".pm2" / "logs" / "nova.log").read_text(),
+        )
+        self.assertEqual(
+            (restore_target / ".ssh" / "id_ed25519").read_text(),
+            (self.home_root / ".ssh" / "id_ed25519").read_text(),
+        )
+        self.assertEqual(
+            (restore_target / ".omni" / "config.json").read_text(),
+            (self.home_root / ".omni" / "config.json").read_text(),
+        )
+        self.assertEqual(
+            (restore_target / "omnisync" / ".git" / "HEAD").read_text(),
+            (self.home_root / "omnisync" / ".git" / "HEAD").read_text(),
         )
 
 
