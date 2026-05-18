@@ -247,6 +247,15 @@ if ($SkipBootstrap -ne "1") {
 }
 Write-Ok "Runtime ready at $RuntimeDir"
 
+Write-Step "Removing conflicting wrappers"
+foreach ($conflict in @("omni", "omni.ps1", "omni.cmd")) {
+    $ConflictPath = Join-Path $BinDir $conflict
+    if ((Test-Path $ConflictPath) -and $ConflictPath -ne $WrapperCmd) {
+        Remove-Item -Force $ConflictPath
+        Write-Ok "Removed conflicting $conflict from $BinDir"
+    }
+}
+
 Write-Step "Creating CLI wrapper"
 $WrapperBody = @"
 @echo off
@@ -284,7 +293,15 @@ Write-Step "Validating OmniSync"
 & $WrapperCmd init | Out-Null
 & $WrapperCmd help | Out-Null
 & $WrapperCmd commands | Out-Null
-$ResolvedOmni = (Get-Command omni -ErrorAction Stop).Source
+$ResolvedOmni = (Get-Command omni -ErrorAction SilentlyContinue).Source
+# PowerShell siempre prefiere .ps1 sobre .cmd — si resolvió .ps1, forzamos su eliminación
+if ($ResolvedOmni -and $ResolvedOmni -ne $WrapperCmd) {
+    if ($ResolvedOmni -match '\.ps1$') {
+        Remove-Item -Force $ResolvedOmni
+        Write-Ok "PowerShell prefería .ps1 — lo eliminamos, re-resolviendo..."
+        $ResolvedOmni = (Get-Command omni -ErrorAction Stop).Source
+    }
+}
 if ($ResolvedOmni -ne $WrapperCmd) {
     Fail "PowerShell resolves omni to $ResolvedOmni instead of $WrapperCmd"
 }
